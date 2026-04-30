@@ -1,6 +1,16 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.1.7';
+  const EXTENSION_VERSION = '0.1.8';
+  const FEATURES = [
+    'status',
+    'models',
+    'metadata',
+    'send-last',
+    'rebuild-chat',
+    'retrieve',
+    'debug-chat',
+    'pending',
+  ];
   const DEFAULTS = {
     enabled: true,
     proxyUrl: 'http://localhost:8088',
@@ -50,8 +60,11 @@
     if (progress) progress.hidden = !busy;
   }
 
-  function mountPanel() {
-    if (document.querySelector('#loreweaver-proxy-panel')) return;
+  function mountPanel({ force = true } = {}) {
+    const existing = document.querySelector('#loreweaver-proxy-panel');
+    if (existing && !force) return;
+    if (existing) existing.remove();
+
     const panel = document.createElement('div');
     panel.id = 'loreweaver-proxy-panel';
     panel.innerHTML = `
@@ -545,12 +558,15 @@
     mountPanel();
     bindEvents();
     window.LoreWeaverProxy = {
+      version: EXTENSION_VERSION,
+      features: FEATURES,
       buildSTMemoryMetadata,
       rebuildCurrentChat,
       retrieveMemoryPreview,
       debugCurrentChat,
       refreshPending,
       checkHealth,
+      rerender: () => mountPanel({ force: true }),
       settings: state.settings,
     };
   }
