@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.1.8';
+  const EXTENSION_VERSION = '0.2.0';
   const FEATURES = [
     'status',
     'models',
@@ -100,6 +100,7 @@
         <button id="loreweaver-proxy-rebuild" type="button">Rebuild Chat</button>
         <button id="loreweaver-proxy-retrieve" type="button">Retrieve</button>
         <button id="loreweaver-proxy-debug-chat" type="button">Debug Chat</button>
+        <button id="loreweaver-proxy-clear-debug" type="button">Clear</button>
       </div>
       <div id="loreweaver-proxy-ops" class="lw-ops"></div>
       <pre id="loreweaver-proxy-debug-output" class="lw-debug-output"></pre>
@@ -139,6 +140,7 @@
     panel.querySelector('#loreweaver-proxy-rebuild').addEventListener('click', rebuildCurrentChat);
     panel.querySelector('#loreweaver-proxy-retrieve').addEventListener('click', retrieveMemoryPreview);
     panel.querySelector('#loreweaver-proxy-debug-chat').addEventListener('click', debugCurrentChat);
+    panel.querySelector('#loreweaver-proxy-clear-debug').addEventListener('click', clearDebug);
   }
 
   function bindEvents() {
@@ -266,7 +268,7 @@
       setStatus('Loading pending ops', true);
       const response = await getJson('/v1/lore/pending');
       renderOperations(response.items || []);
-      showDebug(response);
+      showDebug(summarizePending(response.items || []));
       setStatus(`${(response.items || []).length} pending`);
     } catch (error) {
       setStatus(`Pending failed: ${error.message}`);
@@ -389,6 +391,21 @@
     }
   }
 
+  function summarizePending(items) {
+    const byType = {};
+    const byStatus = {};
+    for (const item of items) {
+      byType[item.operation_type || 'unknown'] = (byType[item.operation_type || 'unknown'] || 0) + 1;
+      byStatus[item.status || 'unknown'] = (byStatus[item.status || 'unknown'] || 0) + 1;
+    }
+    return {
+      items: items.length,
+      by_type: byType,
+      by_status: byStatus,
+      sample: items.slice(0, 5),
+    };
+  }
+
   async function applyOperation(operationId, action) {
     const response = await postJson(`/v1/lore/${action}`, { operation_id: operationId });
     showDebug(response);
@@ -492,6 +509,14 @@
     output.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
   }
 
+  function clearDebug() {
+    const output = document.querySelector('#loreweaver-proxy-debug-output');
+    const ops = document.querySelector('#loreweaver-proxy-ops');
+    if (output) output.textContent = '';
+    if (ops) ops.innerHTML = '';
+    setStatus('Debug cleared');
+  }
+
   function lastOf(items) {
     return items.length ? items[items.length - 1] : null;
   }
@@ -567,6 +592,7 @@
       refreshPending,
       checkHealth,
       rerender: () => mountPanel({ force: true }),
+      clearDebug,
       settings: state.settings,
     };
   }
