@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.0';
+  const EXTENSION_VERSION = '0.2.1';
   const FEATURES = [
     'status',
     'models',
@@ -10,6 +10,7 @@
     'retrieve',
     'debug-chat',
     'pending',
+    'ui-smoke',
   ];
   const DEFAULTS = {
     enabled: true,
@@ -100,6 +101,7 @@
         <button id="loreweaver-proxy-rebuild" type="button">Rebuild Chat</button>
         <button id="loreweaver-proxy-retrieve" type="button">Retrieve</button>
         <button id="loreweaver-proxy-debug-chat" type="button">Debug Chat</button>
+        <button id="loreweaver-proxy-smoke" type="button">UI Smoke</button>
         <button id="loreweaver-proxy-clear-debug" type="button">Clear</button>
       </div>
       <div id="loreweaver-proxy-ops" class="lw-ops"></div>
@@ -140,6 +142,7 @@
     panel.querySelector('#loreweaver-proxy-rebuild').addEventListener('click', rebuildCurrentChat);
     panel.querySelector('#loreweaver-proxy-retrieve').addEventListener('click', retrieveMemoryPreview);
     panel.querySelector('#loreweaver-proxy-debug-chat').addEventListener('click', debugCurrentChat);
+    panel.querySelector('#loreweaver-proxy-smoke').addEventListener('click', runUISmokeTests);
     panel.querySelector('#loreweaver-proxy-clear-debug').addEventListener('click', clearDebug);
   }
 
@@ -349,6 +352,213 @@
       setStatus(`${response.counts?.facts_active || 0} active facts`);
     } catch (error) {
       setStatus(`Debug chat failed: ${error.message}`);
+    }
+  }
+
+  async function runUISmokeTests() {
+    const startedAt = new Date().toISOString();
+    const steps = [];
+    const suffix = Date.now();
+    let ingested = false;
+    let deleted = false;
+    let ready = null;
+    let proxyStatus = null;
+    let smokeIds = {};
+
+    try {
+      setStatus('Running UI smoke', true);
+      const baseMetadata = await buildSTMemoryMetadata(lastChatMessage(), 'user');
+      const activeCharacter =
+        baseMetadata.active_character || {
+          character_id: 'char_ui_smoke',
+          name: 'UI Smoke Character',
+          fingerprint: 'ui_smoke',
+        };
+      const smokeWorldId = baseMetadata.world_id || 'ui-smoke-world';
+      const smokeChatId = `${baseMetadata.chat_id || 'default-chat'}__ui_smoke_${suffix}`;
+      const smokeMessageId = `ui-smoke-msg-${suffix}`;
+      smokeIds = {
+        world_id: smokeWorldId,
+        chat_id: smokeChatId,
+        message_id: smokeMessageId,
+      };
+
+      ready = await smokeStep(steps, 'readyz', async () => {
+        const response = await getJson('/readyz');
+        if (response.status !== 'ok') throw new Error(`readyz status is ${response.status}`);
+        return { status: response.status, checks: response.checks };
+      });
+
+      proxyStatus = await smokeStep(steps, 'debug status', async () => {
+        const response = await getJson('/v1/debug/status');
+        if (!response.service) throw new Error('missing service field');
+        return {
+          service: response.service,
+          version: response.version,
+          chat_model: response.chat_model,
+          embedding_model: response.embedding_model,
+          extraction_model: response.extraction_model,
+          llm_extraction_enabled: response.llm_extraction_enabled,
+          rerank_enabled: response.rerank_enabled,
+        };
+      });
+
+      await smokeStep(steps, 'models', async () => {
+        const response = await getJson('/v1/models');
+        const models = (response.data || []).map((item) => item.id).filter(Boolean);
+        if (!models.length) throw new Error('model list is empty');
+        return {
+          count: models.length,
+          has_chat_model: proxyStatus.chat_model ? models.includes(proxyStatus.chat_model) : null,
+          has_extraction_model: proxyStatus.extraction_model
+            ? models.includes(proxyStatus.extraction_model)
+            : null,
+          sample: models.slice(0, 8),
+        };
+      });
+
+      await smokeStep(steps, 'embeddings', async () => {
+        const response = await postJson('/v1/embeddings', {
+          model: proxyStatus.embedding_model,
+          input: 'LoreWeaver UI smoke embedding probe',
+        });
+        const dimensions = response.data?.[0]?.embedding?.length || 0;
+        if (dimensions <= 0) throw new Error('embedding vector is empty');
+        return { model: response.model, dimensions };
+      });
+
+      const event = {
+        event_type: 'message_created',
+        message_id: smokeMessageId,
+        chat_id: smokeChatId,
+        world_id: smokeWorldId,
+        speaker: {
+          type: 'user',
+          id: baseMetadata.profile_id || baseMetadata.user_id || 'ui-smoke-user',
+          name: baseMetadata.profile_id || baseMetadata.user_id || 'UI Smoke User',
+        },
+        visible_to: [baseMetadata.profile_id, activeCharacter.character_id].filter(Boolean),
+        content:
+          'Lyra is a ranger from Arkvale. She guards the north gate and secretly distrusts Baron Veyr.',
+        active_character_context: activeCharacter,
+        created_at: new Date().toISOString(),
+      };
+
+      const ingest = await smokeStep(steps, 'synthetic ingest', async () => {
+        const response = await postJson('/v1/st/events/message', event);
+        if ((response.records || 0) < 1) throw new Error('ingest created no records');
+        return response;
+      });
+      ingested = true;
+
+      const smokeMetadata = {
+        ...baseMetadata,
+        world_id: smokeWorldId,
+        chat_id: smokeChatId,
+        active_character: activeCharacter,
+        message: {
+          ...baseMetadata.message,
+          message_id: `ui-smoke-retrieve-${suffix}`,
+          speaker_type: 'user',
+          speaker_id: baseMetadata.profile_id || baseMetadata.user_id || 'ui-smoke-user',
+          is_deleted: false,
+          is_edited: false,
+        },
+      };
+
+      await smokeStep(steps, 'retrieve memory', async () => {
+        const response = await postJson('/v1/memory/retrieve', {
+          metadata: smokeMetadata,
+          query: 'What does the current character know about Lyra and Baron Veyr?',
+          recent_messages: [],
+        });
+        if (!String(response.memory_block || '').includes('Lyra')) {
+          throw new Error('memory block does not mention Lyra');
+        }
+        return {
+          records: response.records?.length || 0,
+          degraded: response.degraded,
+          memory_block_preview: String(response.memory_block || '').slice(0, 500),
+        };
+      });
+
+      await smokeStep(steps, 'delete synthetic message', async () => {
+        const response = await postJson('/v1/st/events/message-deleted', {
+          message_id: smokeMessageId,
+          chat_id: smokeChatId,
+          world_id: smokeWorldId,
+          speaker: { type: 'system', id: 'ui-smoke-system', name: 'UI Smoke System' },
+          content: '',
+        });
+        deleted = true;
+        return response;
+      });
+
+      await smokeStep(steps, 'debug after delete', async () => {
+        const response = await getJson(
+          `/v1/memory/debug/chat/${encodeURIComponent(smokeWorldId)}/${encodeURIComponent(smokeChatId)}?limit=20`,
+        );
+        const counts = response.counts || {};
+        if ((counts.facts_active || 0) !== 0) {
+          throw new Error(`expected 0 active facts, got ${counts.facts_active}`);
+        }
+        if ((counts.facts_deleted || 0) < (ingest.records || 1)) {
+          throw new Error(`expected deleted facts >= ${ingest.records || 1}`);
+        }
+        return counts;
+      });
+    } catch (error) {
+      if (ingested && !deleted && smokeIds.message_id) {
+        await smokeCleanup(steps, smokeIds);
+      }
+      const failed = steps.filter((step) => step.status === 'fail').length || 1;
+      showDebug({
+        status: 'failed',
+        started_at: startedAt,
+        finished_at: new Date().toISOString(),
+        smoke_ids: smokeIds,
+        failed,
+        steps,
+      });
+      setStatus(`UI smoke failed: ${error.message}`);
+      return;
+    }
+
+    showDebug({
+      status: 'passed',
+      started_at: startedAt,
+      finished_at: new Date().toISOString(),
+      smoke_ids: smokeIds,
+      passed: steps.length,
+      steps,
+      ready,
+    });
+    setStatus(`UI smoke passed (${steps.length})`);
+  }
+
+  async function smokeCleanup(steps, smokeIds) {
+    try {
+      const response = await postJson('/v1/st/events/message-deleted', {
+        message_id: smokeIds.message_id,
+        chat_id: smokeIds.chat_id,
+        world_id: smokeIds.world_id,
+        speaker: { type: 'system', id: 'ui-smoke-system', name: 'UI Smoke System' },
+        content: '',
+      });
+      steps.push({ name: 'cleanup delete', status: 'pass', details: response });
+    } catch (error) {
+      steps.push({ name: 'cleanup delete', status: 'fail', error: error.message });
+    }
+  }
+
+  async function smokeStep(steps, name, action) {
+    try {
+      const details = await action();
+      steps.push({ name, status: 'pass', details });
+      return details;
+    } catch (error) {
+      steps.push({ name, status: 'fail', error: error.message });
+      throw error;
     }
   }
 
@@ -563,7 +773,7 @@
   }
 
   async function getJson(path) {
-    const response = await fetch(`${state.settings.proxyUrl}${path}`);
+    const response = await fetch(`${state.settings.proxyUrl}${path}`, { credentials: 'include' });
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     return response.json();
   }
@@ -572,6 +782,7 @@
     const response = await fetch(`${state.settings.proxyUrl}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(body),
     });
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
@@ -589,6 +800,7 @@
       rebuildCurrentChat,
       retrieveMemoryPreview,
       debugCurrentChat,
+      runUISmokeTests,
       refreshPending,
       checkHealth,
       rerender: () => mountPanel({ force: true }),
