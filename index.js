@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.3';
+  const EXTENSION_VERSION = '0.2.4';
   const FEATURES = [
     'status',
     'models',
@@ -11,6 +11,7 @@
     'debug-chat',
     'pending',
     'ui-smoke',
+    'hygiene',
   ];
   const DEFAULTS = {
     enabled: true,
@@ -101,6 +102,8 @@
         <button id="loreweaver-proxy-rebuild" type="button">Rebuild Chat</button>
         <button id="loreweaver-proxy-retrieve" type="button">Retrieve</button>
         <button id="loreweaver-proxy-debug-chat" type="button">Debug Chat</button>
+        <button id="loreweaver-proxy-hygiene" type="button">Hygiene</button>
+        <button id="loreweaver-proxy-apply-hygiene" type="button">Apply Hygiene</button>
         <button id="loreweaver-proxy-smoke" type="button">UI Smoke</button>
         <button id="loreweaver-proxy-clear-debug" type="button">Clear</button>
       </div>
@@ -142,6 +145,8 @@
     panel.querySelector('#loreweaver-proxy-rebuild').addEventListener('click', rebuildCurrentChat);
     panel.querySelector('#loreweaver-proxy-retrieve').addEventListener('click', retrieveMemoryPreview);
     panel.querySelector('#loreweaver-proxy-debug-chat').addEventListener('click', debugCurrentChat);
+    panel.querySelector('#loreweaver-proxy-hygiene').addEventListener('click', hygienePreview);
+    panel.querySelector('#loreweaver-proxy-apply-hygiene').addEventListener('click', applyHygiene);
     panel.querySelector('#loreweaver-proxy-smoke').addEventListener('click', runUISmokeTests);
     panel.querySelector('#loreweaver-proxy-clear-debug').addEventListener('click', clearDebug);
   }
@@ -358,6 +363,35 @@
       setStatus(`${response.counts?.facts_active || 0} active facts`);
     } catch (error) {
       setStatus(`Debug chat failed: ${error.message}`);
+    }
+  }
+
+  async function hygienePreview() {
+    try {
+      setStatus('Loading hygiene preview', true);
+      const metadata = await buildSTMemoryMetadata(lastChatMessage(), 'user');
+      const response = await getJson(
+        `/v1/memory/hygiene/preview?world_id=${encodeURIComponent(metadata.world_id)}`,
+      );
+      showDebug(response);
+      setStatus(`${response.counts?.orphan_entities || 0} orphan entities`);
+    } catch (error) {
+      setStatus(`Hygiene failed: ${error.message}`);
+    }
+  }
+
+  async function applyHygiene() {
+    try {
+      const metadata = await buildSTMemoryMetadata(lastChatMessage(), 'user');
+      if (!window.confirm(`Apply hygiene cleanup for world "${metadata.world_id}"?`)) return;
+      setStatus('Applying hygiene cleanup', true);
+      const response = await postJson('/v1/memory/hygiene/apply', {
+        world_id: metadata.world_id,
+      });
+      showDebug(response);
+      setStatus(`${response.counts?.deleted_orphan_entities || 0} orphan entities deleted`);
+    } catch (error) {
+      setStatus(`Hygiene failed: ${error.message}`);
     }
   }
 
@@ -871,6 +905,8 @@
       rebuildCurrentChat,
       retrieveMemoryPreview,
       debugCurrentChat,
+      hygienePreview,
+      applyHygiene,
       runUISmokeTests,
       refreshPending,
       checkHealth,
