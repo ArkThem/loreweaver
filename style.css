@@ -47,6 +47,14 @@
   width: 100%;
 }
 
+#loreweaver-proxy-panel .lw-progress-detail {
+  font-family: var(--monoFontFamily, monospace);
+  font-size: 0.82em;
+  margin-top: 4px;
+  opacity: 0.78;
+  overflow-wrap: anywhere;
+}
+
 #loreweaver-proxy-panel .lw-ops {
   display: grid;
   gap: 6px;

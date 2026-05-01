@@ -1,12 +1,13 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.6';
+  const EXTENSION_VERSION = '0.2.8';
   const FEATURES = [
     'status',
     'models',
     'metadata',
     'send-last',
     'rebuild-chat',
+    'rebuild-job',
     'retrieve',
     'prompt-preview',
     'debug-chat',
@@ -59,8 +60,19 @@
     state.busy = busy;
     const status = document.querySelector('#loreweaver-proxy-status');
     const progress = document.querySelector('#loreweaver-proxy-progress');
+    const progressDetail = document.querySelector('#loreweaver-proxy-progress-detail');
     if (status) status.textContent = text;
-    if (progress) progress.hidden = !busy;
+    if (progress) {
+      progress.hidden = !busy;
+      if (busy) {
+        progress.removeAttribute('value');
+        progress.removeAttribute('max');
+      }
+    }
+    if (progressDetail) {
+      progressDetail.hidden = !busy;
+      progressDetail.textContent = busy ? text : '';
+    }
   }
 
   function mountPanel({ force = true } = {}) {
@@ -77,6 +89,7 @@
         <span id="loreweaver-proxy-status" class="lw-status lw-grow">Idle</span>
       </div>
       <progress id="loreweaver-proxy-progress" hidden></progress>
+      <div id="loreweaver-proxy-progress-detail" class="lw-progress-detail" hidden></div>
       <div class="lw-row">
         <label for="loreweaver-proxy-enabled">Enabled</label>
         <input id="loreweaver-proxy-enabled" type="checkbox">
@@ -319,18 +332,79 @@
 
   async function rebuildCurrentChat() {
     try {
-      setStatus('Rebuilding current chat', true);
+      setStatus('Queueing rebuild job', true);
       const request = await buildChatSyncRequest();
       if (!request.messages.length) {
         setStatus('No chat messages found');
         showDebug(request);
         return;
       }
-      const response = await postJson('/v1/st/events/chat-sync', request);
-      showDebug({ request_summary: summarizeChatSyncRequest(request), response });
-      setStatus(`Rebuilt ${request.messages.length} messages`);
+      const job = await postJson('/v1/memory/rebuild-chat-jobs', request);
+      showDebug({ request_summary: summarizeChatSyncRequest(request), job });
+      setRebuildProgress(job, 'Queued rebuild job');
+      const finalJob = await pollRebuildJob(job.job_id);
+      showDebug({ request_summary: summarizeChatSyncRequest(request), job: finalJob });
+      if (finalJob.status === 'completed') {
+        setRebuildProgress(finalJob, 'Rebuild completed', false);
+      } else {
+        setRebuildProgress(finalJob, `Rebuild ${finalJob.status}`, false);
+      }
     } catch (error) {
       setStatus(`Rebuild failed: ${error.message}`);
+    }
+  }
+
+  async function pollRebuildJob(jobId) {
+    if (!jobId) throw new Error('rebuild job_id missing');
+    let job = null;
+    for (let attempt = 0; attempt < 900; attempt += 1) {
+      job = await getJson(`/v1/memory/rebuild-chat-jobs/${encodeURIComponent(jobId)}`);
+      setRebuildProgress(job);
+      if (job.status === 'completed' || job.status === 'failed') return job;
+      await sleep(2000);
+    }
+    return job || { job_id: jobId, status: 'unknown', error: 'poll timeout' };
+  }
+
+  function setRebuildProgress(job, label = '', busy = null) {
+    const total = Number(job?.messages_total || 0);
+    const processed = Number(job?.messages_processed || 0);
+    const records = Number(job?.records || 0);
+    const operations = Number(job?.operations || 0);
+    const statusText = String(job?.status || 'unknown');
+    const isBusy = busy ?? !['completed', 'failed'].includes(statusText);
+    const percent = total > 0 ? Math.round((Math.min(processed, total) / total) * 100) : 0;
+    const title = label || `Rebuild ${statusText}`;
+    const detailParts = [
+      `${title}: ${processed}/${total || '?'} messages`,
+      total > 0 ? `${percent}%` : null,
+      `${records} records`,
+      `${operations} operations`,
+      job?.job_id ? `job ${job.job_id}` : null,
+    ].filter(Boolean);
+    const detail = detailParts.join(' · ');
+
+    state.status = detail;
+    state.busy = isBusy;
+
+    const status = document.querySelector('#loreweaver-proxy-status');
+    const progress = document.querySelector('#loreweaver-proxy-progress');
+    const progressDetail = document.querySelector('#loreweaver-proxy-progress-detail');
+
+    if (status) status.textContent = detail;
+    if (progress) {
+      progress.hidden = false;
+      if (total > 0) {
+        progress.max = total;
+        progress.value = Math.min(processed, total);
+      } else {
+        progress.removeAttribute('value');
+        progress.removeAttribute('max');
+      }
+    }
+    if (progressDetail) {
+      progressDetail.hidden = false;
+      progressDetail.textContent = job?.error ? `${detail} · ${job.error}` : detail;
     }
   }
 
@@ -874,6 +948,10 @@
 
   function lastOf(items) {
     return items.length ? items[items.length - 1] : null;
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
   async function characterIdFromCard(card) {
