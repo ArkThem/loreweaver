@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.8';
+  const EXTENSION_VERSION = '0.2.9';
   const FEATURES = [
     'status',
     'models',
@@ -123,7 +123,12 @@
         <button id="loreweaver-proxy-clear-debug" type="button">Clear</button>
       </div>
       <div id="loreweaver-proxy-ops" class="lw-ops"></div>
-      <pre id="loreweaver-proxy-debug-output" class="lw-debug-output"></pre>
+      <div class="lw-output-wrap">
+        <button id="loreweaver-proxy-copy-debug" class="lw-copy-all" type="button" title="Copy all" aria-label="Copy all output">
+          <span aria-hidden="true">⧉</span>
+        </button>
+        <pre id="loreweaver-proxy-debug-output" class="lw-debug-output"></pre>
+      </div>
     `;
 
     const target =
@@ -165,6 +170,10 @@
     panel.querySelector('#loreweaver-proxy-apply-hygiene').addEventListener('click', applyHygiene);
     panel.querySelector('#loreweaver-proxy-smoke').addEventListener('click', runUISmokeTests);
     panel.querySelector('#loreweaver-proxy-clear-debug').addEventListener('click', clearDebug);
+    panel.querySelector('#loreweaver-proxy-copy-debug').addEventListener('click', () => {
+      const output = panel.querySelector('#loreweaver-proxy-debug-output');
+      copyText(output?.textContent || '', 'Debug output copied');
+    });
   }
 
   function bindEvents() {
@@ -727,7 +736,12 @@
       node.className = 'lw-op';
       node.innerHTML = `
         <div class="lw-op-title"></div>
-        <div class="lw-op-body"></div>
+        <div class="lw-output-wrap lw-op-output-wrap">
+          <button class="lw-copy-all" type="button" title="Copy all" aria-label="Copy operation output" data-action="copy-output">
+            <span aria-hidden="true">⧉</span>
+          </button>
+          <div class="lw-op-body"></div>
+        </div>
         <div class="lw-row">
           <button type="button" data-action="apply">Apply</button>
           <button type="button" data-action="reject">Reject</button>
@@ -741,6 +755,9 @@
       );
       node.querySelector('[data-action="reject"]').addEventListener('click', () =>
         applyOperation(item.operation_id, 'reject'),
+      );
+      node.querySelector('[data-action="copy-output"]').addEventListener('click', () =>
+        copyText(node.querySelector('.lw-op-body')?.textContent || '', 'Operation output copied'),
       );
       root.appendChild(node);
     }
@@ -944,6 +961,40 @@
     if (output) output.textContent = '';
     if (ops) ops.innerHTML = '';
     setStatus('Debug cleared');
+  }
+
+  async function copyText(text, successStatus = 'Copied') {
+    if (!text) {
+      setStatus('Nothing to copy');
+      return;
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        fallbackCopyText(text);
+      }
+      setStatus(successStatus);
+    } catch (error) {
+      try {
+        fallbackCopyText(text);
+        setStatus(successStatus);
+      } catch {
+        setStatus(`Copy failed: ${error.message}`);
+      }
+    }
+  }
+
+  function fallbackCopyText(text) {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', 'readonly');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    textarea.remove();
   }
 
   function lastOf(items) {
