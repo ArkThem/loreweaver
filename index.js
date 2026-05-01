@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.1';
+  const EXTENSION_VERSION = '0.2.2';
   const FEATURES = [
     'status',
     'models',
@@ -179,8 +179,13 @@
 
   async function sendMessageEvent(eventType, message, fallbackSpeakerType) {
     if (!state.settings.enabled || !state.settings.sendEvents || !state.settings.proxyUrl) return;
-    const metadata = await buildSTMemoryMetadata(message, fallbackSpeakerType);
-    const content = extractMessageContent(message);
+    const resolvedMessage = resolveEventMessage(message, fallbackSpeakerType);
+    const content = extractMessageContent(resolvedMessage).trim();
+    if (eventType !== 'message_deleted' && !content) {
+      setStatus('Skipped empty message event');
+      return;
+    }
+    const metadata = await buildSTMemoryMetadata(resolvedMessage, fallbackSpeakerType);
     const endpoint =
       eventType === 'message_updated'
         ? '/v1/st/events/message-updated'
@@ -196,7 +201,7 @@
       speaker: {
         type: metadata.message.speaker_type,
         id: metadata.message.speaker_id || metadata.profile_id || 'speaker',
-        name: speakerName(message),
+        name: speakerName(resolvedMessage),
       },
       visible_to: [metadata.profile_id, metadata.active_character?.character_id].filter(Boolean),
       content,
@@ -367,6 +372,8 @@
 
     try {
       setStatus('Running UI smoke', true);
+      renderOperations([]);
+      showDebug('');
       const baseMetadata = await buildSTMemoryMetadata(lastChatMessage(), 'user');
       const activeCharacter =
         baseMetadata.active_character || {
@@ -693,9 +700,38 @@
     return lastOf(messages) || null;
   }
 
+  function resolveEventMessage(message, fallbackSpeakerType = 'user') {
+    const directContent = extractMessageContent(message).trim();
+    if (directContent) return message;
+
+    const chat = currentChatMessages();
+    if (Number.isInteger(message) && chat[message]) return chat[message];
+    if (typeof message === 'string' && /^\d+$/.test(message) && chat[Number(message)]) {
+      return chat[Number(message)];
+    }
+
+    const expectedUser = fallbackSpeakerType === 'user';
+    for (let index = chat.length - 1; index >= 0; index -= 1) {
+      const candidate = chat[index];
+      const content = extractMessageContent(candidate).trim();
+      if (!content) continue;
+      if (fallbackSpeakerType === 'system') return candidate;
+      if (isUserMessage(candidate) === expectedUser) return candidate;
+    }
+    return message || {};
+  }
+
   function extractMessageContent(message) {
     if (typeof message === 'string') return message;
     return String(message?.mes || message?.content || message?.message || message?.text || '');
+  }
+
+  function isUserMessage(message) {
+    const context = getContext() || {};
+    if (message?.is_user !== undefined) return Boolean(message.is_user);
+    if (message?.role) return message.role === 'user';
+    if (message?.name && context.name1) return message.name === context.name1;
+    return false;
   }
 
   function speakerName(message) {
