@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.2';
+  const EXTENSION_VERSION = '0.2.3';
   const FEATURES = [
     'status',
     'models',
@@ -223,14 +223,15 @@
     const context = getContext() || {};
     const character = currentCharacter(context);
     const characterId = character ? await characterIdFromCard(character) : null;
-    const messageId = String(message.message_id || message.id || message.swipe_id || Date.now());
+    const chatId = String(context.chatId || context.chat_id || context.chat?.id || 'default-chat');
+    const messageId = stableMessageId(message, chatMessageIndex(message), chatId);
     return {
       schema_version: '1.0',
       extension_version: EXTENSION_VERSION,
       user_id: context.name1 || 'default-user',
       profile_id: context.name1 || 'profile_001',
       world_id: state.settings.worldId || context.worldName || 'default-world',
-      chat_id: String(context.chatId || context.chat_id || context.chat?.id || 'default-chat'),
+      chat_id: chatId,
       mode: context.groupId || context.group_id ? 'group' : 'single',
       memory_scope: 'character_private',
       active_character: character
@@ -745,8 +746,42 @@
       message?.id ||
       message?.send_date ||
       message?.created_at;
-    if (existing) return String(existing).replace(/[^\p{L}\p{N}_:-]+/gu, '_');
-    return `${chatId}_${index}`;
+    if (existing) return sanitizeMessageId(existing);
+    if (Number.isInteger(index) && index >= 0) return sanitizeMessageId(`${chatId}_${index}`);
+    const content = extractMessageContent(message).trim();
+    if (content) return sanitizeMessageId(`${chatId}_${simpleHash(content).slice(0, 16)}`);
+    return sanitizeMessageId(`${chatId}_unknown`);
+  }
+
+  function chatMessageIndex(message) {
+    const chat = currentChatMessages();
+    if (Number.isInteger(message)) return message;
+    if (typeof message === 'string' && /^\d+$/.test(message)) return Number(message);
+
+    const directIndex = chat.indexOf(message);
+    if (directIndex >= 0) return directIndex;
+
+    const existingId = message?.message_id || message?.id || message?.send_date || message?.created_at;
+    if (existingId) {
+      const found = chat.findIndex(
+        (candidate) =>
+          String(candidate?.message_id || candidate?.id || candidate?.send_date || candidate?.created_at || '') ===
+          String(existingId),
+      );
+      if (found >= 0) return found;
+    }
+
+    const content = extractMessageContent(message).trim();
+    if (content) {
+      for (let index = chat.length - 1; index >= 0; index -= 1) {
+        if (extractMessageContent(chat[index]).trim() === content) return index;
+      }
+    }
+    return -1;
+  }
+
+  function sanitizeMessageId(value) {
+    return String(value).replace(/[^\p{L}\p{N}_:-]+/gu, '_');
   }
 
   function showDebug(value) {
