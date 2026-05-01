@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.4';
+  const EXTENSION_VERSION = '0.2.6';
   const FEATURES = [
     'status',
     'models',
@@ -8,6 +8,7 @@
     'send-last',
     'rebuild-chat',
     'retrieve',
+    'prompt-preview',
     'debug-chat',
     'pending',
     'ui-smoke',
@@ -101,6 +102,7 @@
         <button id="loreweaver-proxy-send-last" type="button">Send Last</button>
         <button id="loreweaver-proxy-rebuild" type="button">Rebuild Chat</button>
         <button id="loreweaver-proxy-retrieve" type="button">Retrieve</button>
+        <button id="loreweaver-proxy-prompt-preview" type="button">Prompt Preview</button>
         <button id="loreweaver-proxy-debug-chat" type="button">Debug Chat</button>
         <button id="loreweaver-proxy-hygiene" type="button">Hygiene</button>
         <button id="loreweaver-proxy-apply-hygiene" type="button">Apply Hygiene</button>
@@ -144,6 +146,7 @@
     panel.querySelector('#loreweaver-proxy-send-last').addEventListener('click', sendLastMessage);
     panel.querySelector('#loreweaver-proxy-rebuild').addEventListener('click', rebuildCurrentChat);
     panel.querySelector('#loreweaver-proxy-retrieve').addEventListener('click', retrieveMemoryPreview);
+    panel.querySelector('#loreweaver-proxy-prompt-preview').addEventListener('click', promptPreview);
     panel.querySelector('#loreweaver-proxy-debug-chat').addEventListener('click', debugCurrentChat);
     panel.querySelector('#loreweaver-proxy-hygiene').addEventListener('click', hygienePreview);
     panel.querySelector('#loreweaver-proxy-apply-hygiene').addEventListener('click', applyHygiene);
@@ -349,6 +352,32 @@
       setStatus(`${response.records?.length || 0} memories retrieved`);
     } catch (error) {
       setStatus(`Retrieve failed: ${error.message}`);
+    }
+  }
+
+  async function promptPreview() {
+    try {
+      setStatus('Building prompt preview', true);
+      const query = prompt('Prompt preview query', lastUserMessageContent() || '');
+      if (query === null) {
+        setStatus('Prompt preview cancelled');
+        return;
+      }
+      const metadata = await buildSTMemoryMetadata(lastChatMessage(), 'user');
+      const response = await postJson('/v1/memory/prompt-preview', {
+        model: 'loreweaver-prompt-preview',
+        stream: false,
+        st_memory: metadata,
+        messages: [{ role: 'user', content: query }],
+      });
+      showDebug(response);
+      setStatus(
+        response.injected
+          ? `Memory injected (${response.records_count || 0} records)`
+          : 'No memory injected',
+      );
+    } catch (error) {
+      setStatus(`Prompt preview failed: ${error.message}`);
     }
   }
 
@@ -735,6 +764,17 @@
     return lastOf(messages) || null;
   }
 
+  function lastUserMessageContent() {
+    const messages = currentChatMessages();
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (isUserMessage(messages[index])) {
+        const content = extractMessageContent(messages[index]).trim();
+        if (content) return content;
+      }
+    }
+    return extractMessageContent(lastChatMessage()).trim();
+  }
+
   function resolveEventMessage(message, fallbackSpeakerType = 'user') {
     const directContent = extractMessageContent(message).trim();
     if (directContent) return message;
@@ -904,6 +944,7 @@
       buildSTMemoryMetadata,
       rebuildCurrentChat,
       retrieveMemoryPreview,
+      promptPreview,
       debugCurrentChat,
       hygienePreview,
       applyHygiene,
