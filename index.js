@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.9';
+  const EXTENSION_VERSION = '0.2.10';
   const FEATURES = [
     'status',
     'models',
@@ -11,6 +11,7 @@
     'retrieve',
     'prompt-preview',
     'debug-chat',
+    'graph-debug',
     'pending',
     'ui-smoke',
     'hygiene',
@@ -117,6 +118,7 @@
         <button id="loreweaver-proxy-retrieve" type="button">Retrieve</button>
         <button id="loreweaver-proxy-prompt-preview" type="button">Prompt Preview</button>
         <button id="loreweaver-proxy-debug-chat" type="button">Debug Chat</button>
+        <button id="loreweaver-proxy-graph-debug" type="button">Graph Debug</button>
         <button id="loreweaver-proxy-hygiene" type="button">Hygiene</button>
         <button id="loreweaver-proxy-apply-hygiene" type="button">Apply Hygiene</button>
         <button id="loreweaver-proxy-smoke" type="button">UI Smoke</button>
@@ -166,6 +168,7 @@
     panel.querySelector('#loreweaver-proxy-retrieve').addEventListener('click', retrieveMemoryPreview);
     panel.querySelector('#loreweaver-proxy-prompt-preview').addEventListener('click', promptPreview);
     panel.querySelector('#loreweaver-proxy-debug-chat').addEventListener('click', debugCurrentChat);
+    panel.querySelector('#loreweaver-proxy-graph-debug').addEventListener('click', graphDebugCurrentChat);
     panel.querySelector('#loreweaver-proxy-hygiene').addEventListener('click', hygienePreview);
     panel.querySelector('#loreweaver-proxy-apply-hygiene').addEventListener('click', applyHygiene);
     panel.querySelector('#loreweaver-proxy-smoke').addEventListener('click', runUISmokeTests);
@@ -478,6 +481,24 @@
     }
   }
 
+  async function graphDebugCurrentChat() {
+    try {
+      setStatus('Loading graph debug', true);
+      const metadata = await buildSTMemoryMetadata(lastChatMessage(), 'user');
+      const response = await getJson(
+        `/v1/graph/statements/${encodeURIComponent(metadata.world_id)}?status=all&chat_id=${encodeURIComponent(metadata.chat_id)}`,
+      );
+      const items = response.items || [];
+      showDebug({
+        summary: summarizeGraphStatements(items),
+        items,
+      });
+      setStatus(`${items.length} graph statements`);
+    } catch (error) {
+      setStatus(`Graph debug failed: ${error.message}`);
+    }
+  }
+
   async function hygienePreview() {
     try {
       setStatus('Loading hygiene preview', true);
@@ -778,6 +799,38 @@
     };
   }
 
+  function summarizeGraphStatements(items) {
+    const byStatus = {};
+    const byPredicate = {};
+    const bySubject = {};
+    for (const item of items) {
+      const status = item?.validity?.status || 'unknown';
+      const predicate = item?.predicate || 'unknown';
+      const subject = item?.subject_id || 'unknown';
+      byStatus[status] = (byStatus[status] || 0) + 1;
+      byPredicate[predicate] = (byPredicate[predicate] || 0) + 1;
+      bySubject[subject] = (bySubject[subject] || 0) + 1;
+    }
+    return {
+      total: items.length,
+      by_status: byStatus,
+      by_predicate: byPredicate,
+      by_subject: bySubject,
+      active_sample: items
+        .filter((item) => item?.validity?.status === 'active')
+        .slice(0, 8)
+        .map((item) => ({
+          subject_id: item.subject_id,
+          predicate: item.predicate,
+          object_id: item.object_id,
+          object_literal: item.object_literal,
+          qualifiers: item.qualifiers,
+          weight: item.weight,
+          text: item.text,
+        })),
+    };
+  }
+
   async function applyOperation(operationId, action) {
     const response = await postJson(`/v1/lore/${action}`, { operation_id: operationId });
     showDebug(response);
@@ -1075,6 +1128,7 @@
       retrieveMemoryPreview,
       promptPreview,
       debugCurrentChat,
+      graphDebugCurrentChat,
       hygienePreview,
       applyHygiene,
       runUISmokeTests,

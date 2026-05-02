@@ -40,3 +40,16 @@ uses the current world metadata, creates an isolated synthetic chat id, then:
 
 The result is printed in the debug output block as a compact pass/fail JSON
 report.
+
+## Graph Debug
+
+Click `Graph Debug` to inspect graph-v2 statements for the current
+`world_id/chat_id`. It calls:
+
+```text
+GET /v1/graph/statements/{world_id}?status=all&chat_id={chat_id}
+```
+
+The debug output includes a summary grouped by status, predicate, and subject,
+plus the raw statement list. This is read-only and does not affect prompt
+injection.
