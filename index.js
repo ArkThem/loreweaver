@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.13';
+  const EXTENSION_VERSION = '0.2.14';
   const FEATURES = [
     'status',
     'models',
@@ -510,6 +510,7 @@
         summary: summarizeGraphStatements(items),
         entity_map: response.entity_map || {},
         missing_entity_ids: response.missing_entity_ids || [],
+        missing_entity_ids_by_status: response.missing_entity_ids_by_status || {},
         items,
       });
       setStatus(`${items.length} graph statements`);
