@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.15';
+  const EXTENSION_VERSION = '0.2.16';
   const FEATURES = [
     'status',
     'models',

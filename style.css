@@ -26,20 +26,23 @@
 }
 
 #loreweaver-proxy-panel button {
-  background: var(--SmartThemeQuoteColor, #2f5f8f);
-  border: 1px solid color-mix(in srgb, var(--SmartThemeQuoteColor, #2f5f8f) 70%, #000 30%);
+  background: #1f5f86;
+  border: 1px solid #123f5d;
   border-radius: 6px;
-  color: var(--SmartThemeBodyColor, #ffffff);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  color: #f7fbff;
   cursor: pointer;
   font-weight: 600;
   min-height: 28px;
   padding: 4px 10px;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
 }
 
 #loreweaver-proxy-panel button:hover,
 #loreweaver-proxy-panel button:focus-visible {
-  background: color-mix(in srgb, var(--SmartThemeQuoteColor, #2f5f8f) 82%, #fff 18%);
-  color: var(--SmartThemeBodyColor, #ffffff);
+  background: #2877a7;
+  border-color: #1a567c;
+  color: #ffffff;
 }
 
 #loreweaver-proxy-panel button:disabled {
