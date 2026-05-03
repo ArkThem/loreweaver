@@ -25,6 +25,28 @@
   min-width: 0;
 }
 
+#loreweaver-proxy-panel button {
+  background: var(--SmartThemeQuoteColor, #2f5f8f);
+  border: 1px solid color-mix(in srgb, var(--SmartThemeQuoteColor, #2f5f8f) 70%, #000 30%);
+  border-radius: 6px;
+  color: var(--SmartThemeBodyColor, #ffffff);
+  cursor: pointer;
+  font-weight: 600;
+  min-height: 28px;
+  padding: 4px 10px;
+}
+
+#loreweaver-proxy-panel button:hover,
+#loreweaver-proxy-panel button:focus-visible {
+  background: color-mix(in srgb, var(--SmartThemeQuoteColor, #2f5f8f) 82%, #fff 18%);
+  color: var(--SmartThemeBodyColor, #ffffff);
+}
+
+#loreweaver-proxy-panel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
 #loreweaver-proxy-panel .lw-grow {
   flex: 1 1 auto;
 }
