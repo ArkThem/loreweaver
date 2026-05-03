@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.10';
+  const EXTENSION_VERSION = '0.2.11';
   const FEATURES = [
     'status',
     'models',
@@ -12,6 +12,7 @@
     'prompt-preview',
     'debug-chat',
     'graph-debug',
+    'entity-merge',
     'pending',
     'ui-smoke',
     'hygiene',
@@ -119,6 +120,7 @@
         <button id="loreweaver-proxy-prompt-preview" type="button">Prompt Preview</button>
         <button id="loreweaver-proxy-debug-chat" type="button">Debug Chat</button>
         <button id="loreweaver-proxy-graph-debug" type="button">Graph Debug</button>
+        <button id="loreweaver-proxy-merge-entity" type="button">Merge Entity</button>
         <button id="loreweaver-proxy-hygiene" type="button">Hygiene</button>
         <button id="loreweaver-proxy-apply-hygiene" type="button">Apply Hygiene</button>
         <button id="loreweaver-proxy-smoke" type="button">UI Smoke</button>
@@ -169,6 +171,7 @@
     panel.querySelector('#loreweaver-proxy-prompt-preview').addEventListener('click', promptPreview);
     panel.querySelector('#loreweaver-proxy-debug-chat').addEventListener('click', debugCurrentChat);
     panel.querySelector('#loreweaver-proxy-graph-debug').addEventListener('click', graphDebugCurrentChat);
+    panel.querySelector('#loreweaver-proxy-merge-entity').addEventListener('click', mergeEntity);
     panel.querySelector('#loreweaver-proxy-hygiene').addEventListener('click', hygienePreview);
     panel.querySelector('#loreweaver-proxy-apply-hygiene').addEventListener('click', applyHygiene);
     panel.querySelector('#loreweaver-proxy-smoke').addEventListener('click', runUISmokeTests);
@@ -496,6 +499,32 @@
       setStatus(`${items.length} graph statements`);
     } catch (error) {
       setStatus(`Graph debug failed: ${error.message}`);
+    }
+  }
+
+  async function mergeEntity() {
+    try {
+      const metadata = await buildSTMemoryMetadata(lastChatMessage(), 'user');
+      const sourceEntityId = window.prompt('Source entity id to merge/deactivate');
+      if (!sourceEntityId) return;
+      const targetEntityId = window.prompt('Target canonical entity/character id');
+      if (!targetEntityId) return;
+      const source = sourceEntityId.trim();
+      const target = targetEntityId.trim();
+      if (!source || !target) return;
+      if (source === target) throw new Error('Source and target must differ');
+      if (!window.confirm(`Merge "${source}" into "${target}" in world "${metadata.world_id}"?`)) return;
+      setStatus('Merging entity', true);
+      const response = await postJson('/v1/entities/merge', {
+        world_id: metadata.world_id,
+        source_entity_id: source,
+        target_entity_id: target,
+        reason: 'manual_ui_merge',
+      });
+      showDebug(response);
+      setStatus('Entity merge complete');
+    } catch (error) {
+      setStatus(`Entity merge failed: ${error.message}`);
     }
   }
 
@@ -1129,6 +1158,7 @@
       promptPreview,
       debugCurrentChat,
       graphDebugCurrentChat,
+      mergeEntity,
       hygienePreview,
       applyHygiene,
       runUISmokeTests,

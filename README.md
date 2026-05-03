@@ -54,6 +54,14 @@ The debug output includes a summary grouped by status, predicate, and subject,
 plus the raw statement list. This is read-only and does not affect prompt
 injection.
 
+## Merge Entity
+
+Click `Merge Entity` when you have confirmed that two ids are the same entity,
+for example a duplicate `ent_*` and the canonical `char_*`. The button asks for
+source and target ids, then calls `/v1/entities/merge`. It is a soft/audited
+operation: old statements are rejected, safe statements are replayed under the
+target, and the source entity is marked as merged.
+
 ## Button Reference
 
 See [../../docs/sillytavern-extension-debug-panel.md](../../docs/sillytavern-extension-debug-panel.md)
