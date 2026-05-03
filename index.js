@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.12';
+  const EXTENSION_VERSION = '0.2.13';
   const FEATURES = [
     'status',
     'models',
@@ -228,6 +228,16 @@
         : eventType === 'message_deleted'
           ? '/v1/st/events/message-deleted'
           : '/v1/st/events/message';
+    const eventSpeakerName = speakerName(resolvedMessage);
+    const groupMembers = metadata.group?.members || [];
+    const resolvedSpeaker = metadata.message.speaker_type === 'character'
+      ? resolveMetadataMember(metadata, eventSpeakerName) || metadata.active_character
+      : null;
+    const visibleTo = [
+      metadata.profile_id,
+      metadata.active_character?.character_id,
+      ...groupMembers.map((member) => member.character_id),
+    ].filter(Boolean);
 
     const payload = {
       event_type: eventType,
@@ -236,12 +246,13 @@
       world_id: metadata.world_id,
       speaker: {
         type: metadata.message.speaker_type,
-        id: metadata.message.speaker_id || metadata.profile_id || 'speaker',
-        name: speakerName(resolvedMessage),
+        id: resolvedSpeaker?.character_id || metadata.message.speaker_id || metadata.profile_id || 'speaker',
+        name: eventSpeakerName,
       },
-      visible_to: [metadata.profile_id, metadata.active_character?.character_id].filter(Boolean),
+      visible_to: visibleTo,
       content,
-      active_character_context: metadata.active_character,
+      active_character_context: resolvedSpeaker || metadata.active_character,
+      group_context: metadata.group,
       created_at: new Date().toISOString(),
     };
 
@@ -259,8 +270,17 @@
     const context = getContext() || {};
     const character = currentCharacter(context);
     const characterId = character ? await characterIdFromCard(character) : null;
+    const group = await buildGroupContext(context);
     const chatId = String(context.chatId || context.chat_id || context.chat?.id || 'default-chat');
     const messageId = stableMessageId(message, chatMessageIndex(message), chatId);
+    const activeCharacter = character
+      ? {
+          character_id: characterId,
+          name: character.name || context.name2 || 'Character',
+          fingerprint: characterId.split('_').pop(),
+          aliases: characterAliases(character, context),
+        }
+      : null;
     return {
       schema_version: '1.0',
       extension_version: EXTENSION_VERSION,
@@ -270,14 +290,8 @@
       chat_id: chatId,
       mode: context.groupId || context.group_id ? 'group' : 'single',
       memory_scope: 'character_private',
-      active_character: character
-        ? {
-            character_id: characterId,
-            name: character.name || context.name2 || 'Character',
-            fingerprint: characterId.split('_').pop(),
-          }
-        : null,
-      group: { group_id: context.groupId || context.group_id || null, members: [] },
+      active_character: activeCharacter,
+      group,
       message: {
         message_id: messageId,
         parent_message_id: null,
@@ -873,7 +887,12 @@
     const metadata = await buildSTMemoryMetadata(lastChatMessage(), 'user');
     const messages = [];
     const activeCharacter = metadata.active_character;
-    const visibleTo = [metadata.profile_id, activeCharacter?.character_id].filter(Boolean);
+    const groupMembers = metadata.group?.members || [];
+    const visibleTo = [
+      metadata.profile_id,
+      activeCharacter?.character_id,
+      ...groupMembers.map((member) => member.character_id),
+    ].filter(Boolean);
     const chat = currentChatMessages();
 
     for (let index = 0; index < chat.length; index += 1) {
@@ -881,9 +900,12 @@
       const content = extractMessageContent(message).trim();
       if (!content) continue;
       const isUser = Boolean(message?.is_user || message?.role === 'user');
+      const resolvedSpeaker = isUser
+        ? null
+        : resolveMetadataMember(metadata, speakerName(message)) || activeCharacter;
       const speakerId = isUser
         ? metadata.profile_id || metadata.user_id || 'profile_001'
-        : activeCharacter?.character_id || message?.name || 'character';
+        : resolvedSpeaker?.character_id || message?.name || 'character';
       messages.push({
         event_type: 'message_created',
         message_id: stableMessageId(message, index, metadata.chat_id),
@@ -892,11 +914,12 @@
         speaker: {
           type: isUser ? 'user' : 'character',
           id: speakerId,
-          name: speakerName(message) || (isUser ? context.name1 : activeCharacter?.name),
+          name: speakerName(message) || (isUser ? context.name1 : resolvedSpeaker?.name),
         },
         visible_to: visibleTo,
         content,
-        active_character_context: activeCharacter,
+        active_character_context: isUser ? activeCharacter : resolvedSpeaker,
+        group_context: metadata.group,
         created_at: message?.send_date || message?.created_at || new Date().toISOString(),
       });
     }
@@ -905,6 +928,7 @@
       chat_id: metadata.chat_id,
       world_id: metadata.world_id,
       active_character_context: activeCharacter,
+      group: metadata.group,
       messages,
     };
   }
@@ -924,6 +948,114 @@
     const id = context.characterId ?? context.character_id;
     if (Array.isArray(context.characters) && id !== undefined) return context.characters[id];
     return null;
+  }
+
+  async function buildGroupContext(context) {
+    const groupId = context.groupId || context.group_id || context.selected_group || null;
+    const members = [];
+    if (!groupId) return { group_id: null, members };
+    const addMember = async (card, ref = null) => {
+      if (!card) return;
+      const characterId = await characterIdFromCard(card);
+      if (members.some((member) => member.character_id === characterId)) return;
+      members.push({
+        character_id: characterId,
+        name: card.name || String(ref),
+        fingerprint: characterId.split('_').pop(),
+        aliases: characterAliases(card, context, ref),
+      });
+    };
+
+    const group = currentGroup(context, groupId);
+    const memberRefs = Array.isArray(group?.members) ? group.members : [];
+    for (const ref of memberRefs) {
+      await addMember(characterFromMemberRef(context, ref), ref);
+    }
+    for (const message of currentChatMessages()) {
+      if (isUserMessage(message)) continue;
+      await addMember(characterFromMemberRef(context, speakerName(message)));
+    }
+    const active = currentCharacter(context);
+    if (active) {
+      await addMember(active);
+    }
+    return { group_id: String(groupId), members };
+  }
+
+  function currentGroup(context, groupId) {
+    if (context.group && String(context.group.id || context.group._id || context.group.group_id || context.group.name) === String(groupId)) {
+      return context.group;
+    }
+    const groups = context.groups || window.groups;
+    if (Array.isArray(groups)) {
+      return groups.find((group) => String(group.id || group._id || group.group_id || group.name) === String(groupId)) || null;
+    }
+    if (groups && typeof groups === 'object') {
+      return groups[groupId] || Object.values(groups).find((group) => String(group?.id || group?._id || group?.group_id || group?.name) === String(groupId)) || null;
+    }
+    return null;
+  }
+
+  function characterFromMemberRef(context, ref) {
+    if (ref && typeof ref === 'object' && ref.name) return ref;
+    const characters = Array.isArray(context.characters)
+      ? context.characters
+      : Array.isArray(window.characters)
+        ? window.characters
+        : [];
+    if (typeof ref === 'number') return characters[ref] || null;
+    const refKey = String(ref || '').trim();
+    if (!refKey) return null;
+    return (
+      characters.find((card) =>
+        [card?.avatar, card?.name, card?.id, card?.filename, card?.file_name]
+          .filter(Boolean)
+          .some((value) => String(value) === refKey),
+      ) || null
+    );
+  }
+
+  function characterAliases(card, context, ref = null) {
+    const aliases = new Set();
+    const add = (value) => {
+      const text = String(value || '').trim();
+      if (text && text !== card.name) aliases.add(text);
+    };
+    add(card.name);
+    add(card.data?.name);
+    add(card.description?.match?.(/(?:aka|also known as|известн[а-я]+ как|называют)\s+([^.\n]+)/iu)?.[1]);
+    if (ref && typeof ref === 'object') {
+      add(ref.name);
+      add(ref.display_name);
+      add(ref.avatar);
+    }
+    for (const message of currentChatMessages()) {
+      const name = speakerName(message);
+      if (!name) continue;
+      if (name === card.name) continue;
+      if (String(name).toLowerCase() === String(card.name || '').toLowerCase()) add(name);
+      if (card.avatar && message?.avatar && String(card.avatar) === String(message.avatar)) add(name);
+      if (card.avatar && message?.original_avatar && String(card.avatar) === String(message.original_avatar)) add(name);
+    }
+    return Array.from(aliases).slice(0, 8);
+  }
+
+  function resolveMetadataMember(metadata, name) {
+    const key = normalizeName(name);
+    if (!key) return null;
+    return (metadata.group?.members || []).find((member) =>
+      [member.name, member.character_id, ...(member.aliases || [])]
+        .map(normalizeName)
+        .includes(key),
+    ) || null;
+  }
+
+  function normalizeName(value) {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s-]+/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   function currentChatMessages() {
