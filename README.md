@@ -53,3 +53,8 @@ GET /v1/graph/statements/{world_id}?status=all&chat_id={chat_id}
 The debug output includes a summary grouped by status, predicate, and subject,
 plus the raw statement list. This is read-only and does not affect prompt
 injection.
+
+## Button Reference
+
+See [../../docs/sillytavern-extension-debug-panel.md](../../docs/sillytavern-extension-debug-panel.md)
+for what each panel button does, when to use it, and which buttons mutate data.
