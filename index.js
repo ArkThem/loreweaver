@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.17';
+  const EXTENSION_VERSION = '0.2.18';
   const FEATURES = [
     'status',
     'models',
@@ -16,6 +16,7 @@
     'pending',
     'ui-smoke',
     'hygiene',
+    'hard-reset',
   ];
   const DEFAULTS = {
     enabled: true,
@@ -123,6 +124,7 @@
         <button id="loreweaver-proxy-merge-entity" type="button">Merge Entity</button>
         <button id="loreweaver-proxy-hygiene" type="button">Hygiene</button>
         <button id="loreweaver-proxy-apply-hygiene" type="button">Apply Hygiene</button>
+        <button id="loreweaver-proxy-hard-reset" type="button">Hard Reset</button>
         <button id="loreweaver-proxy-smoke" type="button">UI Smoke</button>
         <button id="loreweaver-proxy-clear-debug" type="button">Clear</button>
       </div>
@@ -174,6 +176,7 @@
     panel.querySelector('#loreweaver-proxy-merge-entity').addEventListener('click', mergeEntity);
     panel.querySelector('#loreweaver-proxy-hygiene').addEventListener('click', hygienePreview);
     panel.querySelector('#loreweaver-proxy-apply-hygiene').addEventListener('click', applyHygiene);
+    panel.querySelector('#loreweaver-proxy-hard-reset').addEventListener('click', hardReset);
     panel.querySelector('#loreweaver-proxy-smoke').addEventListener('click', runUISmokeTests);
     panel.querySelector('#loreweaver-proxy-clear-debug').addEventListener('click', clearDebug);
     panel.querySelector('#loreweaver-proxy-copy-debug').addEventListener('click', () => {
@@ -286,7 +289,7 @@
       extension_version: EXTENSION_VERSION,
       user_id: context.name1 || 'default-user',
       profile_id: context.name1 || 'profile_001',
-      world_id: state.settings.worldId || context.worldName || 'default-world',
+      world_id: currentWorldId(context),
       chat_id: chatId,
       mode: context.groupId || context.group_id ? 'group' : 'single',
       memory_scope: 'character_private',
@@ -386,10 +389,21 @@
   async function pollRebuildJob(jobId) {
     if (!jobId) throw new Error('rebuild job_id missing');
     let job = null;
-    for (let attempt = 0; attempt < 900; attempt += 1) {
-      job = await getJson(`/v1/memory/rebuild-chat-jobs/${encodeURIComponent(jobId)}`);
-      setRebuildProgress(job);
-      if (job.status === 'completed' || job.status === 'failed') return job;
+    const started = Date.now();
+    let transientErrors = 0;
+    while (Date.now() - started < 6 * 60 * 60 * 1000) {
+      try {
+        job = await getJson(`/v1/memory/rebuild-chat-jobs/${encodeURIComponent(jobId)}`);
+        transientErrors = 0;
+        setRebuildProgress(job);
+        if (job.status === 'completed' || job.status === 'failed') return job;
+      } catch (error) {
+        transientErrors += 1;
+        setRebuildProgress(
+          job || { job_id: jobId, status: 'running', messages_total: 0, messages_processed: 0 },
+          `Polling retry ${transientErrors}: ${error.message}`,
+        );
+      }
       await sleep(2000);
     }
     return job || { job_id: jobId, status: 'unknown', error: 'poll timeout' };
@@ -402,10 +416,11 @@
     const operations = Number(job?.operations || 0);
     const statusText = String(job?.status || 'unknown');
     const isBusy = busy ?? !['completed', 'failed'].includes(statusText);
-    const percent = total > 0 ? Math.round((Math.min(processed, total) / total) * 100) : 0;
+    const displayProcessed = statusText === 'completed' && total > 0 ? total : processed;
+    const percent = total > 0 ? Math.round((Math.min(displayProcessed, total) / total) * 100) : 0;
     const title = label || `Rebuild ${statusText}`;
     const detailParts = [
-      `${title}: ${processed}/${total || '?'} messages`,
+      `${title}: ${displayProcessed}/${total || '?'} messages`,
       total > 0 ? `${percent}%` : null,
       `${records} records`,
       `${operations} operations`,
@@ -425,7 +440,7 @@
       progress.hidden = false;
       if (total > 0) {
         progress.max = total;
-        progress.value = Math.min(processed, total);
+        progress.value = Math.min(displayProcessed, total);
       } else {
         progress.removeAttribute('value');
         progress.removeAttribute('max');
@@ -571,6 +586,40 @@
       setStatus(`${response.counts?.deleted_orphan_entities || 0} orphan entities deleted`);
     } catch (error) {
       setStatus(`Hygiene failed: ${error.message}`);
+    }
+  }
+
+  async function hardReset() {
+    try {
+      const metadata = await buildSTMemoryMetadata(lastChatMessage(), 'user');
+      const worldPhrase = `HARD RESET ${metadata.world_id}`;
+      const confirmation = window.prompt(
+        [
+          'This deletes LoreWeaver memory for the current world from SQLite and Qdrant.',
+          `Type "${worldPhrase}" to reset only world "${metadata.world_id}".`,
+          'Type "HARD RESET ALL" to delete all LoreWeaver memory and recreate the Qdrant collection.',
+        ].join('\n'),
+      );
+      if (confirmation === null) {
+        setStatus('Hard reset cancelled');
+        return;
+      }
+      const trimmed = confirmation.trim();
+      const scope = trimmed === 'HARD RESET ALL' ? 'all' : 'world';
+      if (trimmed !== 'HARD RESET ALL' && trimmed !== worldPhrase) {
+        setStatus('Hard reset confirmation did not match');
+        return;
+      }
+      setStatus(`Hard resetting ${scope}`, true);
+      const response = await postJson('/v1/admin/hard-reset', {
+        scope,
+        world_id: metadata.world_id,
+        confirmation: trimmed,
+      });
+      showDebug(response);
+      setStatus(`Hard reset ${scope} complete`);
+    } catch (error) {
+      setStatus(`Hard reset failed: ${error.message}`);
     }
   }
 
@@ -951,6 +1000,42 @@
     return null;
   }
 
+  function currentWorldId(context) {
+    const chatMetadata = context.chatMetadata || {};
+    const chatWorld = firstNonEmptyString(
+      chatMetadata.world_info,
+      chatMetadata.worldInfo,
+      chatMetadata.world_name,
+    );
+    if (chatWorld) return chatWorld;
+
+    const explicitOverride = firstNonEmptyString(state.settings.worldId);
+    if (explicitOverride && explicitOverride !== DEFAULTS.worldId) return explicitOverride;
+
+    const globalWorld = Array.isArray(window.selected_world_info) && window.selected_world_info.length === 1
+      ? firstNonEmptyString(window.selected_world_info[0])
+      : '';
+    return firstNonEmptyString(
+      context.worldName,
+      context.world_name,
+      globalWorld,
+      DEFAULTS.worldId,
+    );
+  }
+
+  function firstNonEmptyString(...values) {
+    for (const value of values) {
+      if (Array.isArray(value)) {
+        const nested = firstNonEmptyString(...value);
+        if (nested) return nested;
+        continue;
+      }
+      const text = String(value || '').trim();
+      if (text) return text;
+    }
+    return '';
+  }
+
   async function buildGroupContext(context) {
     const groupId = context.groupId || context.group_id || context.selected_group || null;
     const members = [];
@@ -1296,6 +1381,7 @@
       mergeEntity,
       hygienePreview,
       applyHygiene,
+      hardReset,
       runUISmokeTests,
       refreshPending,
       checkHealth,
