@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.25';
+  const EXTENSION_VERSION = '0.2.26';
   const FEATURES = [
     'status',
     'models',
@@ -126,7 +126,6 @@
           <option value="safe_auto">Safe Auto</option>
           <option value="full_auto">Full Auto</option>
         </select>
-        <button id="loreweaver-proxy-pending" type="button">Pending</button>
       </div>
       <div class="lw-row">
         <label for="loreweaver-proxy-extractor-narrative">Extractor</label>
@@ -141,20 +140,12 @@
         <input id="loreweaver-proxy-extractor-temp" class="lw-number" type="number" min="0" max="2" step="0.05">
       </div>
       <div class="lw-row lw-wrap">
-        <button id="loreweaver-proxy-debug-status" type="button">Status</button>
-        <button id="loreweaver-proxy-models" type="button">Models</button>
         <button id="loreweaver-proxy-metadata" type="button">Metadata</button>
-        <button id="loreweaver-proxy-send-last" type="button">Send Last</button>
         <button id="loreweaver-proxy-rebuild" type="button">Rebuild Chat</button>
-        <button id="loreweaver-proxy-retrieve" type="button">Retrieve</button>
         <button id="loreweaver-proxy-prompt-preview" type="button">Prompt Preview</button>
         <button id="loreweaver-proxy-debug-chat" type="button">Debug Chat</button>
         <button id="loreweaver-proxy-graph-debug" type="button">Graph Debug</button>
-        <button id="loreweaver-proxy-merge-entity" type="button">Merge Entity</button>
-        <button id="loreweaver-proxy-hygiene" type="button">Hygiene</button>
-        <button id="loreweaver-proxy-apply-hygiene" type="button">Apply Hygiene</button>
         <button id="loreweaver-proxy-hard-reset" type="button">Hard Reset</button>
-        <button id="loreweaver-proxy-smoke" type="button">UI Smoke</button>
         <button id="loreweaver-proxy-clear-debug" type="button">Clear</button>
       </div>
       <div id="loreweaver-proxy-ops" class="lw-ops"></div>
@@ -226,24 +217,15 @@
       saveSettings();
     });
     panel.querySelector('#loreweaver-proxy-health').addEventListener('click', checkHealth);
-    panel.querySelector('#loreweaver-proxy-pending').addEventListener('click', refreshPending);
     panel.querySelector('#loreweaver-proxy-rebuild-resume').addEventListener('click', resumeRebuildJob);
     panel.querySelector('#loreweaver-proxy-rebuild-pause').addEventListener('click', pauseRebuildJob);
     panel.querySelector('#loreweaver-proxy-rebuild-cancel').addEventListener('click', cancelRebuildJob);
-    panel.querySelector('#loreweaver-proxy-debug-status').addEventListener('click', debugStatus);
-    panel.querySelector('#loreweaver-proxy-models').addEventListener('click', showModels);
     panel.querySelector('#loreweaver-proxy-metadata').addEventListener('click', showMetadata);
-    panel.querySelector('#loreweaver-proxy-send-last').addEventListener('click', sendLastMessage);
     panel.querySelector('#loreweaver-proxy-rebuild').addEventListener('click', rebuildCurrentChat);
-    panel.querySelector('#loreweaver-proxy-retrieve').addEventListener('click', retrieveMemoryPreview);
     panel.querySelector('#loreweaver-proxy-prompt-preview').addEventListener('click', promptPreview);
     panel.querySelector('#loreweaver-proxy-debug-chat').addEventListener('click', debugCurrentChat);
     panel.querySelector('#loreweaver-proxy-graph-debug').addEventListener('click', graphDebugCurrentChat);
-    panel.querySelector('#loreweaver-proxy-merge-entity').addEventListener('click', mergeEntity);
-    panel.querySelector('#loreweaver-proxy-hygiene').addEventListener('click', hygienePreview);
-    panel.querySelector('#loreweaver-proxy-apply-hygiene').addEventListener('click', applyHygiene);
     panel.querySelector('#loreweaver-proxy-hard-reset').addEventListener('click', hardReset);
-    panel.querySelector('#loreweaver-proxy-smoke').addEventListener('click', runUISmokeTests);
     panel.querySelector('#loreweaver-proxy-clear-debug').addEventListener('click', clearDebug);
     panel.querySelector('#loreweaver-proxy-copy-debug').addEventListener('click', () => {
       const output = panel.querySelector('#loreweaver-proxy-debug-output');
@@ -1236,7 +1218,7 @@
       value
       && typeof value === 'object'
       && !Array.isArray(value)
-      && /^(world_info|worldinfo|worlds|world_names?|worldnames?|selected_world_info)$/i.test(key)
+      && /^(world_info|worldinfo|worlds|world_names?|worldnames?|selected_world_info|chat_lore|chatlore|chat_lorebook|chatlorebook|chat_lorebooks|chatlorebooks|lorebook|lorebooks)$/i.test(key)
     ) {
       for (const id of Object.keys(value).map((item) => cleanWorldKeyId(item)).filter(Boolean)) {
         candidates.push({ id, source: `${source} keys` });
@@ -1269,6 +1251,14 @@
       'worldNames',
       'world_names',
       'selected_world_info',
+      'chatLore',
+      'chat_lore',
+      'chatLorebook',
+      'chat_lorebook',
+      'chatLorebooks',
+      'chat_lorebooks',
+      'lorebook',
+      'lorebooks',
     ];
     const result = [];
     for (const key of directKeys) {
@@ -1313,7 +1303,7 @@
     if (!value || typeof value !== 'object') return false;
     try {
       return Object.keys(value).some((key) =>
-        /^(world_info|worldInfo|world_info_before|world_info_after|world|worlds|world_id|world_ids|worldName|world_name|worldNames|world_names|selected_world_info)$/i.test(key),
+        /^(world_info|worldInfo|world_info_before|world_info_after|world|worlds|world_id|world_ids|worldName|world_name|worldNames|world_names|selected_world_info|chatLore|chat_lore|chatLorebook|chat_lorebook|chatLorebooks|chat_lorebooks|lorebook|lorebooks)$/i.test(key),
       );
     } catch {
       return false;
@@ -1323,7 +1313,7 @@
   function scanWorldLikeCandidates(root, source, maxDepth = 3) {
     const results = [];
     const seen = new WeakSet();
-    const keyPattern = /^(world|worlds|world_info|worldinfo|worldnames?|world_names?|selected_world_info|chat_lore|chatlore|lorebook|lorebooks)$/i;
+    const keyPattern = /^(world|worlds|world_info|worldinfo|worldnames?|world_names?|selected_world_info|chat_lore|chatlore|chat_lorebook|chatlorebook|chat_lorebooks|chatlorebooks|lorebook|lorebooks)$/i;
     const broadPattern = /(world|lore)/i;
     const walk = (value, path, depth) => {
       if (!value || typeof value !== 'object' || depth > maxDepth || seen.has(value)) return;
@@ -1351,16 +1341,33 @@
   function worldProbe(context) {
     const groupId = context.groupId || context.group_id || context.selected_group || null;
     const group = groupId ? currentGroup(context, groupId) : null;
+    const chatId = String(context.chatId || context.chat_id || context.chat?.id || '');
+    const chatMetadata = context.chatMetadata || context.chat_metadata || {};
+    const globalChatMetadata = window.chat_metadata || window.chatMetadata || {};
+    const scopedChatMetadata =
+      chatId && globalChatMetadata && typeof globalChatMetadata === 'object'
+        ? globalChatMetadata[chatId] || globalChatMetadata[context.chatId] || null
+        : null;
+    const worldInfo = window.world_info || window.worldInfo || context.world_info || context.worldInfo;
     return {
       context_keys: worldLikeKeys(context),
       window_keys: worldLikeKeys(window),
-      chat_metadata_keys: worldLikeKeys(context.chatMetadata || context.chat_metadata || {}),
-      global_chat_metadata_keys: worldLikeKeys(window.chat_metadata || window.chatMetadata || {}),
+      chat_metadata_keys: worldLikeKeys(chatMetadata),
+      chat_metadata_fields: summarizeWorldFields(chatMetadata),
+      scoped_chat_metadata_keys: worldLikeKeys(scopedChatMetadata || {}),
+      scoped_chat_metadata_fields: summarizeWorldFields(scopedChatMetadata || {}),
+      global_chat_metadata_keys: worldLikeKeys(globalChatMetadata),
       group_keys: worldLikeKeys(group || {}),
       selected_world_info: summarizeValue(window.selected_world_info),
-      world_info: summarizeValue(window.world_info || window.worldInfo),
-      timed_world_info: summarizeValue((context.chatMetadata || context.chat_metadata || {}).timedWorldInfo),
+      world_info: summarizeValue(worldInfo),
+      world_info_sample: summarizeWorldInfoCollection(worldInfo),
+      timed_world_info: summarizeValue(chatMetadata.timedWorldInfo),
+      timed_world_info_note: 'diagnostic only; not used as world id source',
       group_world_fields: summarizeWorldFields(group || {}),
+      command_keys: {
+        context: commandLikeKeys(context),
+        window: commandLikeKeys(window),
+      },
     };
   }
 
@@ -1382,6 +1389,65 @@
       result[key] = summarizeValue(value[key]);
     }
     return result;
+  }
+
+  function summarizeWorldInfoCollection(value) {
+    if (!value || typeof value !== 'object') return null;
+    let entries = [];
+    try {
+      entries = Object.entries(value);
+    } catch {
+      return null;
+    }
+    return entries
+      .filter(([key]) => !/^jquery\d+/i.test(String(key)))
+      .slice(0, 16)
+      .map(([key, child]) => summarizeWorldInfoItem(key, child));
+  }
+
+  function summarizeWorldInfoItem(key, value) {
+    if (!value || typeof value !== 'object') {
+      return { key, value: summarizeValue(value) };
+    }
+    const fields = {};
+    for (const field of [
+      'name',
+      'id',
+      'uid',
+      'filename',
+      'file_name',
+      'value',
+      'title',
+      'label',
+      'world',
+      'worldName',
+      'world_info',
+      'chatLore',
+      'chat_lore',
+      'lorebook',
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(value, field)) {
+        fields[field] = summarizeValue(value[field]);
+      }
+    }
+    let keys = [];
+    try {
+      keys = Object.keys(value).filter((item) => typeof value[item] !== 'function').slice(0, 24);
+    } catch {
+      keys = [];
+    }
+    return { key, keys, ...fields };
+  }
+
+  function commandLikeKeys(value) {
+    if (!value || typeof value !== 'object') return [];
+    try {
+      return Object.keys(value)
+        .filter((key) => /(world|lore|book|slash|command|execute|chat)/i.test(key))
+        .slice(0, 120);
+    } catch {
+      return [];
+    }
   }
 
   function summarizeValue(value) {

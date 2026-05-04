@@ -25,9 +25,11 @@ For the Kubernetes/NPM route, use:
 
 ## UI Smoke
 
-Click `UI Smoke` in the LoreWeaver panel to run a synthetic end-to-end check
-from inside SillyTavern. It does not add a message to the visible chat. The test
-uses the current world metadata, creates an isolated synthetic chat id, then:
+`UI Smoke` is hidden from the visible panel as of extension `0.2.26`, but remains
+available as `window.LoreWeaverProxy.runUISmokeTests()` for development builds.
+It runs a synthetic end-to-end check from inside SillyTavern and does not add a
+message to the visible chat. The test uses the current world metadata, creates
+an isolated synthetic chat id, then:
 
 1. checks `/readyz`;
 2. checks `/v1/debug/status`;
@@ -56,11 +58,12 @@ injection.
 
 ## Merge Entity
 
-Click `Merge Entity` when you have confirmed that two ids are the same entity,
-for example a duplicate `ent_*` and the canonical `char_*`. The button asks for
-source and target ids, then calls `/v1/entities/merge`. It is a soft/audited
-operation: old statements are rejected, safe statements are replayed under the
-target, and the source entity is marked as merged.
+`Merge Entity` is also hidden from the visible panel. Call
+`window.LoreWeaverProxy.mergeEntity()` only when you have confirmed that two ids
+are the same entity, for example a duplicate `ent_*` and the canonical `char_*`.
+It asks for source and target ids, then calls `/v1/entities/merge`. It is a
+soft/audited operation: old statements are rejected, safe statements are
+replayed under the target, and the source entity is marked as merged.
 
 ## Button Reference
 
