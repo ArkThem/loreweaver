@@ -25,6 +25,15 @@
   min-width: 0;
 }
 
+#loreweaver-proxy-panel .lw-inline-label {
+  min-width: auto;
+}
+
+#loreweaver-proxy-panel .lw-number {
+  flex: 0 0 72px;
+  width: 72px;
+}
+
 #loreweaver-proxy-panel button {
   background: #1f5f86 !important;
   border: 1px solid #123f5d !important;

@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.18';
+  const EXTENSION_VERSION = '0.2.19';
   const FEATURES = [
     'status',
     'models',
@@ -17,6 +17,7 @@
     'ui-smoke',
     'hygiene',
     'hard-reset',
+    'extractor-runtime',
   ];
   const DEFAULTS = {
     enabled: true,
@@ -24,6 +25,10 @@
     automationMode: 'draft',
     worldId: 'default-world',
     sendEvents: true,
+    extractorUseNarrativeModel: false,
+    extractorModel: '',
+    extractorTemperature: 0,
+    extractorMaxTokens: 3000,
   };
 
   const state = {
@@ -111,6 +116,18 @@
         </select>
         <button id="loreweaver-proxy-pending" type="button">Pending</button>
       </div>
+      <div class="lw-row">
+        <label for="loreweaver-proxy-extractor-narrative">Extractor</label>
+        <input id="loreweaver-proxy-extractor-narrative" type="checkbox">
+        <span>Use narrative model</span>
+      </div>
+      <div class="lw-row">
+        <label for="loreweaver-proxy-extractor-model">Model</label>
+        <input id="loreweaver-proxy-extractor-model" class="lw-grow" list="loreweaver-proxy-model-options" placeholder="empty = proxy default / narrative chat model">
+        <datalist id="loreweaver-proxy-model-options"></datalist>
+        <label class="lw-inline-label" for="loreweaver-proxy-extractor-temp">Temp</label>
+        <input id="loreweaver-proxy-extractor-temp" class="lw-number" type="number" min="0" max="2" step="0.05">
+      </div>
       <div class="lw-row lw-wrap">
         <button id="loreweaver-proxy-debug-status" type="button">Status</button>
         <button id="loreweaver-proxy-models" type="button">Models</button>
@@ -146,9 +163,17 @@
     const enabled = panel.querySelector('#loreweaver-proxy-enabled');
     const url = panel.querySelector('#loreweaver-proxy-url');
     const mode = panel.querySelector('#loreweaver-proxy-mode');
+    const extractorNarrative = panel.querySelector('#loreweaver-proxy-extractor-narrative');
+    const extractorModel = panel.querySelector('#loreweaver-proxy-extractor-model');
+    const extractorTemp = panel.querySelector('#loreweaver-proxy-extractor-temp');
     enabled.checked = Boolean(state.settings.enabled);
     url.value = state.settings.proxyUrl;
     mode.value = state.settings.automationMode;
+    extractorNarrative.checked = Boolean(state.settings.extractorUseNarrativeModel);
+    extractorModel.value = state.settings.extractorModel || '';
+    extractorTemp.value = Number.isFinite(Number(state.settings.extractorTemperature))
+      ? String(Number(state.settings.extractorTemperature))
+      : '0';
 
     enabled.addEventListener('change', () => {
       state.settings.enabled = enabled.checked;
@@ -160,6 +185,20 @@
     });
     mode.addEventListener('change', () => {
       state.settings.automationMode = mode.value;
+      saveSettings();
+    });
+    extractorNarrative.addEventListener('change', () => {
+      state.settings.extractorUseNarrativeModel = extractorNarrative.checked;
+      saveSettings();
+    });
+    extractorModel.addEventListener('change', () => {
+      state.settings.extractorModel = extractorModel.value.trim();
+      saveSettings();
+    });
+    extractorModel.addEventListener('focus', loadModelOptions);
+    extractorTemp.addEventListener('change', () => {
+      state.settings.extractorTemperature = clampNumber(extractorTemp.value, 0, 2, 0);
+      extractorTemp.value = String(state.settings.extractorTemperature);
       saveSettings();
     });
     panel.querySelector('#loreweaver-proxy-health').addEventListener('click', checkHealth);
@@ -256,6 +295,7 @@
       content,
       active_character_context: resolvedSpeaker || metadata.active_character,
       group_context: metadata.group,
+      extraction: metadata.extraction,
       created_at: new Date().toISOString(),
     };
 
@@ -295,6 +335,7 @@
       memory_scope: 'character_private',
       active_character: activeCharacter,
       group,
+      extraction: currentExtractionSettings(),
       message: {
         message_id: messageId,
         parent_message_id: null,
@@ -342,7 +383,31 @@
   }
 
   async function showModels() {
-    await runDebugAction('Loading models', async () => getJson('/v1/models'));
+    await runDebugAction('Loading models', async () => {
+      const response = await getJson('/v1/models');
+      renderModelOptions(response);
+      return response;
+    });
+  }
+
+  async function loadModelOptions() {
+    try {
+      renderModelOptions(await getJson('/v1/models'));
+    } catch {
+      // The text input remains usable even when the model list endpoint is unavailable.
+    }
+  }
+
+  function renderModelOptions(response) {
+    const datalist = document.querySelector('#loreweaver-proxy-model-options');
+    if (!datalist) return;
+    const models = (response?.data || []).map((item) => item?.id).filter(Boolean);
+    datalist.innerHTML = '';
+    for (const model of models) {
+      const option = document.createElement('option');
+      option.value = model;
+      datalist.appendChild(option);
+    }
   }
 
   async function showMetadata() {
@@ -970,6 +1035,7 @@
         content,
         active_character_context: isUser ? activeCharacter : resolvedSpeaker,
         group_context: metadata.group,
+        extraction: metadata.extraction,
         created_at: message?.send_date || message?.created_at || new Date().toISOString(),
       });
     }
@@ -979,6 +1045,7 @@
       world_id: metadata.world_id,
       active_character_context: activeCharacter,
       group: metadata.group,
+      extraction: metadata.extraction,
       messages,
     };
   }
@@ -987,6 +1054,7 @@
     return {
       chat_id: request.chat_id,
       world_id: request.world_id,
+      extraction: request.extraction,
       messages: request.messages.length,
       first_message_id: request.messages[0]?.message_id || null,
       last_message_id: lastOf(request.messages)?.message_id || null,
@@ -1023,6 +1091,15 @@
     );
   }
 
+  function currentExtractionSettings() {
+    return {
+      use_narrative_model: Boolean(state.settings.extractorUseNarrativeModel),
+      model: String(state.settings.extractorModel || '').trim() || null,
+      temperature: clampNumber(state.settings.extractorTemperature, 0, 2, 0),
+      max_tokens: Math.round(clampNumber(state.settings.extractorMaxTokens, 256, 12000, 3000)),
+    };
+  }
+
   function firstNonEmptyString(...values) {
     for (const value of values) {
       if (Array.isArray(value)) {
@@ -1034,6 +1111,12 @@
       if (text) return text;
     }
     return '';
+  }
+
+  function clampNumber(value, min, max, fallback) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.min(Math.max(number, min), max);
   }
 
   async function buildGroupContext(context) {
