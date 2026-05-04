@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.22';
+  const EXTENSION_VERSION = '0.2.23';
   const FEATURES = [
     'status',
     'models',
@@ -1131,69 +1131,15 @@
         : null;
 
     addWorldCandidates(candidates, chatMetadata, 'context.chatMetadata');
-    addWorldCandidatesForKey(
-      candidates,
-      'timedWorldInfo',
-      chatMetadata.timedWorldInfo,
-      'context.chatMetadata.timedWorldInfo',
-    );
-    addWorldCandidatesForKey(
-      candidates,
-      'timed_world_info',
-      chatMetadata.timed_world_info,
-      'context.chatMetadata.timed_world_info',
-    );
     if (hasDirectWorldKeys(globalChatMetadata)) {
       addWorldCandidates(candidates, globalChatMetadata, 'window.chat_metadata');
     }
     addWorldCandidates(candidates, scopedChatMetadata, 'window.chat_metadata[chat_id]');
-    addWorldCandidatesForKey(
-      candidates,
-      'timedWorldInfo',
-      scopedChatMetadata?.timedWorldInfo,
-      'window.chat_metadata[chat_id].timedWorldInfo',
-    );
-    addWorldCandidatesForKey(
-      candidates,
-      'timed_world_info',
-      scopedChatMetadata?.timed_world_info,
-      'window.chat_metadata[chat_id].timed_world_info',
-    );
     addWorldCandidates(candidates, context.chat?.metadata, 'context.chat.metadata');
     addWorldCandidates(candidates, context.chat?.chat_metadata, 'context.chat.chat_metadata');
     addWorldCandidates(candidates, group?.chatMetadata, 'group.chatMetadata');
-    addWorldCandidatesForKey(
-      candidates,
-      'timedWorldInfo',
-      group?.chatMetadata?.timedWorldInfo,
-      'group.chatMetadata.timedWorldInfo',
-    );
     addWorldCandidates(candidates, group?.chat_metadata, 'group.chat_metadata');
-    addWorldCandidatesForKey(
-      candidates,
-      'timedWorldInfo',
-      group?.chat_metadata?.timedWorldInfo,
-      'group.chat_metadata.timedWorldInfo',
-    );
-    addWorldCandidatesForKey(
-      candidates,
-      'timed_world_info',
-      group?.chat_metadata?.timed_world_info,
-      'group.chat_metadata.timed_world_info',
-    );
     addWorldCandidates(candidates, group?.metadata, 'group.metadata');
-    addWorldCandidatesForKey(
-      candidates,
-      'timedWorldInfo',
-      group?.metadata?.timedWorldInfo,
-      'group.metadata.timedWorldInfo',
-    );
-    addWorldCandidatesForKey(
-      candidates,
-      'timed_world_info',
-      group?.metadata?.timed_world_info,
-      'group.metadata.timed_world_info',
-    );
     addWorldCandidates(candidates, group, 'group');
     addWorldCandidates(candidates, context.worldInfo, 'context.worldInfo');
     addWorldCandidates(candidates, context.world_info, 'context.world_info');
@@ -1218,7 +1164,7 @@
       value
       && typeof value === 'object'
       && !Array.isArray(value)
-      && /^(world_info|worldinfo|worlds|world_names?|worldnames?|selected_world_info|timed_world_info|timedworldinfo)$/i.test(key)
+      && /^(world_info|worldinfo|worlds|world_names?|worldnames?|selected_world_info)$/i.test(key)
     ) {
       for (const id of Object.keys(value).map((item) => cleanWorldKeyId(item)).filter(Boolean)) {
         candidates.push({ id, source: `${source} keys` });
@@ -1251,8 +1197,6 @@
       'worldNames',
       'world_names',
       'selected_world_info',
-      'timedWorldInfo',
-      'timed_world_info',
     ];
     const result = [];
     for (const key of directKeys) {
@@ -1297,7 +1241,7 @@
     if (!value || typeof value !== 'object') return false;
     try {
       return Object.keys(value).some((key) =>
-        /^(world_info|worldInfo|world_info_before|world_info_after|world|worlds|world_id|world_ids|worldName|world_name|worldNames|world_names|selected_world_info|timedWorldInfo|timed_world_info)$/i.test(key),
+        /^(world_info|worldInfo|world_info_before|world_info_after|world|worlds|world_id|world_ids|worldName|world_name|worldNames|world_names|selected_world_info)$/i.test(key),
       );
     } catch {
       return false;
@@ -1307,7 +1251,7 @@
   function scanWorldLikeCandidates(root, source, maxDepth = 3) {
     const results = [];
     const seen = new WeakSet();
-    const keyPattern = /^(world|worlds|world_info|worldinfo|worldnames?|world_names?|selected_world_info|timed_world_info|timedworldinfo|chat_lore|chatlore|lorebook|lorebooks)$/i;
+    const keyPattern = /^(world|worlds|world_info|worldinfo|worldnames?|world_names?|selected_world_info|chat_lore|chatlore|lorebook|lorebooks)$/i;
     const broadPattern = /(world|lore)/i;
     const walk = (value, path, depth) => {
       if (!value || typeof value !== 'object' || depth > maxDepth || seen.has(value)) return;
