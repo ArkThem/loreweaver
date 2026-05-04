@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.24';
+  const EXTENSION_VERSION = '0.2.25';
   const FEATURES = [
     'status',
     'models',
@@ -135,7 +135,7 @@
       </div>
       <div class="lw-row">
         <label for="loreweaver-proxy-extractor-model">Model</label>
-        <input id="loreweaver-proxy-extractor-model" class="lw-grow" list="loreweaver-proxy-model-options" placeholder="empty = proxy default / narrative chat model">
+        <input id="loreweaver-proxy-extractor-model" class="lw-grow" list="loreweaver-proxy-model-options" placeholder="empty = proxy default extractor" title="Dedicated extraction model override. Disabled when Use narrative model is on; then the proxy uses the active narrative/chat model.">
         <datalist id="loreweaver-proxy-model-options"></datalist>
         <label class="lw-inline-label" for="loreweaver-proxy-extractor-temp">Temp</label>
         <input id="loreweaver-proxy-extractor-temp" class="lw-number" type="number" min="0" max="2" step="0.05">
@@ -188,6 +188,7 @@
     extractorTemp.value = Number.isFinite(Number(state.settings.extractorTemperature))
       ? String(Number(state.settings.extractorTemperature))
       : '0';
+    updateExtractorModelControl(extractorNarrative, extractorModel);
 
     enabled.addEventListener('change', () => {
       state.settings.enabled = enabled.checked;
@@ -207,6 +208,11 @@
     });
     extractorNarrative.addEventListener('change', () => {
       state.settings.extractorUseNarrativeModel = extractorNarrative.checked;
+      if (extractorNarrative.checked) {
+        state.settings.extractorModel = '';
+        extractorModel.value = '';
+      }
+      updateExtractorModelControl(extractorNarrative, extractorModel);
       saveSettings();
     });
     extractorModel.addEventListener('change', () => {
@@ -1410,12 +1416,26 @@
   }
 
   function currentExtractionSettings() {
+    const useNarrativeModel = Boolean(state.settings.extractorUseNarrativeModel);
     return {
-      use_narrative_model: Boolean(state.settings.extractorUseNarrativeModel),
-      model: String(state.settings.extractorModel || '').trim() || null,
+      use_narrative_model: useNarrativeModel,
+      model: useNarrativeModel ? null : String(state.settings.extractorModel || '').trim() || null,
       temperature: clampNumber(state.settings.extractorTemperature, 0, 2, 0),
       max_tokens: Math.round(clampNumber(state.settings.extractorMaxTokens, 256, 12000, 3000)),
     };
+  }
+
+  function updateExtractorModelControl(extractorNarrative, extractorModel) {
+    const usesNarrative = Boolean(extractorNarrative?.checked);
+    if (!extractorModel) return;
+    extractorModel.disabled = usesNarrative;
+    extractorModel.placeholder = usesNarrative
+      ? 'using narrative/chat model'
+      : 'empty = proxy default extractor';
+    extractorModel.title = usesNarrative
+      ? 'Narrative extraction uses the current SillyTavern chat/narrative model. This model override is ignored and cleared.'
+      : 'Dedicated extraction model override. Example: qwen3-14b-extractor.';
+    extractorModel.classList.toggle('lw-disabled-input', usesNarrative);
   }
 
   function firstNonEmptyString(...values) {

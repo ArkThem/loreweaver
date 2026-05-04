@@ -25,6 +25,12 @@
   min-width: 0;
 }
 
+#loreweaver-proxy-panel input:disabled,
+#loreweaver-proxy-panel .lw-disabled-input {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
 #loreweaver-proxy-panel .lw-inline-label {
   min-width: auto;
 }
