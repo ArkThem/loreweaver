@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.28';
+  const EXTENSION_VERSION = '0.2.29';
   const FEATURES = [
     'status',
     'models',
@@ -1259,21 +1259,31 @@
     addWorldCandidates(candidates, context.worldName, 'context.worldName');
     addWorldCandidates(candidates, context.world_name, 'context.world_name');
     addWorldCandidates(candidates, window.selected_world_info, 'window.selected_world_info');
-    addCharacterWorldCandidates(candidates, currentCharacter(context), 'active_character');
-    for (const card of groupCharacterCards(context, group)) {
-      addCharacterWorldCandidates(candidates, card, `group_member.${card?.name || card?.avatar || 'unknown'}`);
-    }
+    candidates.push(...domSelectedWorldCandidates());
     for (const item of scanWorldLikeCandidates(context, 'context')) candidates.push(item);
     return dedupeWorldCandidates(candidates);
   }
 
-  function addCharacterWorldCandidates(candidates, card, source) {
-    if (!card || typeof card !== 'object') return;
-    addWorldCandidates(candidates, card.data?.extensions?.world, `${source}.data.extensions.world`);
-    addWorldCandidates(candidates, card.data?.extensions?.world_info, `${source}.data.extensions.world_info`);
-    addWorldCandidates(candidates, card.data?.extensions?.worldInfo, `${source}.data.extensions.worldInfo`);
-    addWorldCandidates(candidates, card.data?.character_book?.name, `${source}.data.character_book.name`);
-    addWorldCandidates(candidates, card.character_book?.name, `${source}.character_book.name`);
+  function characterWorldFieldSummary(context, group) {
+    const cards = [];
+    const add = (card, source) => {
+      if (!card || typeof card !== 'object') return;
+      cards.push({
+        source,
+        name: card.name || card.data?.name || card.avatar || null,
+        fields: summarizeWorldFields({
+          world: card.data?.extensions?.world,
+          world_info: card.data?.extensions?.world_info,
+          worldInfo: card.data?.extensions?.worldInfo,
+          character_book: card.data?.character_book?.name || card.character_book?.name,
+        }),
+      });
+    };
+    add(currentCharacter(context), 'active_character');
+    for (const card of groupCharacterCards(context, group)) {
+      add(card, `group_member.${card?.name || card?.avatar || 'unknown'}`);
+    }
+    return cards;
   }
 
   function groupCharacterCards(context, group) {
@@ -1379,7 +1389,24 @@
   }
 
   function parseWorldList(value) {
-    return uniqueStrings(String(value || '').split(/[,;\n]+/).map((item) => cleanWorldId(item)));
+    if (value === null || value === undefined) return [];
+    if (Array.isArray(value)) return uniqueStrings(value.flatMap((item) => parseWorldList(item)));
+    if (typeof value === 'object') return uniqueStrings(extractWorldIds(value, 0, true));
+    const text = String(value || '').trim();
+    if (!text) return [];
+    const parsed = parseMaybeJsonWorldList(text);
+    if (parsed) return parsed;
+    return uniqueStrings(text.split(/[,;\n]+/).map((item) => cleanWorldId(item)));
+  }
+
+  function parseMaybeJsonWorldList(text) {
+    if (!/^[\[{]/.test(text)) return null;
+    try {
+      const parsed = JSON.parse(text);
+      return uniqueStrings(extractWorldIds(parsed, 0, true));
+    } catch {
+      return null;
+    }
   }
 
   function hasDirectWorldKeys(value) {
@@ -1485,6 +1512,22 @@
     return extractWorldIds(value, 0, true);
   }
 
+  function domSelectedWorldCandidates() {
+    const result = [];
+    const addFromSelect = (selector, source) => {
+      const element = document.querySelector(selector);
+      if (!(element instanceof HTMLSelectElement)) return;
+      for (const option of Array.from(element.selectedOptions || [])) {
+        const text = cleanWorldId(option.textContent);
+        const value = cleanWorldId(option.value);
+        const id = text && !/^\d+$/.test(text) ? text : value;
+        if (id) result.push({ id, source });
+      }
+    };
+    addFromSelect('#world_info', 'dom.#world_info selected');
+    return dedupeWorldCandidates(result);
+  }
+
   function worldProbe(context, slashProbe = null) {
     const groupId = context.groupId || context.group_id || context.selected_group || null;
     const group = groupId ? currentGroup(context, groupId) : null;
@@ -1511,6 +1554,7 @@
       timed_world_info: summarizeValue(chatMetadata.timedWorldInfo),
       timed_world_info_note: 'diagnostic only; not used as world id source',
       group_world_fields: summarizeWorldFields(group || {}),
+      character_world_fields: characterWorldFieldSummary(context, group),
       dom_world_controls: domWorldControlsProbe(),
       command_keys: {
         context: commandLikeKeys(context),
