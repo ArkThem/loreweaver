@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.19';
+  const EXTENSION_VERSION = '0.2.20';
   const FEATURES = [
     'status',
     'models',
@@ -286,6 +286,8 @@
       message_id: metadata.message.message_id,
       chat_id: metadata.chat_id,
       world_id: metadata.world_id,
+      world_ids: metadata.world_ids,
+      world_binding: metadata.world_binding,
       speaker: {
         type: metadata.message.speaker_type,
         id: resolvedSpeaker?.character_id || metadata.message.speaker_id || metadata.profile_id || 'speaker',
@@ -314,6 +316,7 @@
     const character = currentCharacter(context);
     const characterId = character ? await characterIdFromCard(character) : null;
     const group = await buildGroupContext(context);
+    const worldBinding = currentWorldBinding(context);
     const chatId = String(context.chatId || context.chat_id || context.chat?.id || 'default-chat');
     const messageId = stableMessageId(message, chatMessageIndex(message), chatId);
     const activeCharacter = character
@@ -329,7 +332,9 @@
       extension_version: EXTENSION_VERSION,
       user_id: context.name1 || 'default-user',
       profile_id: context.name1 || 'profile_001',
-      world_id: currentWorldId(context),
+      world_id: worldBinding.world_id,
+      world_ids: worldBinding.world_ids,
+      world_binding: worldBinding,
       chat_id: chatId,
       mode: context.groupId || context.group_id ? 'group' : 'single',
       memory_scope: 'character_private',
@@ -1026,6 +1031,8 @@
         message_id: stableMessageId(message, index, metadata.chat_id),
         chat_id: metadata.chat_id,
         world_id: metadata.world_id,
+        world_ids: metadata.world_ids,
+        world_binding: metadata.world_binding,
         speaker: {
           type: isUser ? 'user' : 'character',
           id: speakerId,
@@ -1043,6 +1050,8 @@
     return {
       chat_id: metadata.chat_id,
       world_id: metadata.world_id,
+      world_ids: metadata.world_ids,
+      world_binding: metadata.world_binding,
       active_character_context: activeCharacter,
       group: metadata.group,
       extraction: metadata.extraction,
@@ -1054,6 +1063,8 @@
     return {
       chat_id: request.chat_id,
       world_id: request.world_id,
+      world_ids: request.world_ids,
+      world_binding: request.world_binding,
       extraction: request.extraction,
       messages: request.messages.length,
       first_message_id: request.messages[0]?.message_id || null,
@@ -1068,27 +1079,129 @@
     return null;
   }
 
-  function currentWorldId(context) {
-    const chatMetadata = context.chatMetadata || {};
-    const chatWorld = firstNonEmptyString(
-      chatMetadata.world_info,
-      chatMetadata.worldInfo,
-      chatMetadata.world_name,
-    );
-    if (chatWorld) return chatWorld;
-
+  function currentWorldBinding(context) {
+    const candidates = worldCandidates(context);
+    let worldIds = uniqueStrings(candidates.map((item) => item.id));
+    if (worldIds.length > 1) {
+      worldIds = worldIds.filter((item) => item !== DEFAULTS.worldId);
+    }
     const explicitOverride = firstNonEmptyString(state.settings.worldId);
-    if (explicitOverride && explicitOverride !== DEFAULTS.worldId) return explicitOverride;
+    if (!worldIds.length && explicitOverride && explicitOverride !== DEFAULTS.worldId) {
+      worldIds = [explicitOverride];
+      candidates.push({ id: explicitOverride, source: 'extension_settings.worldId' });
+    }
+    if (!worldIds.length) worldIds = [DEFAULTS.worldId];
+    const sortedIds = [...worldIds].sort((left, right) => left.localeCompare(right));
+    const worldId = sortedIds.length === 1
+      ? sortedIds[0]
+      : `worldset_${simpleHash(sortedIds.join('|')).slice(0, 16)}`;
+    return {
+      world_id: worldId,
+      world_ids: sortedIds,
+      source: candidates.find((item) => sortedIds.includes(item.id))?.source || 'fallback',
+      candidates,
+    };
+  }
 
-    const globalWorld = Array.isArray(window.selected_world_info) && window.selected_world_info.length === 1
-      ? firstNonEmptyString(window.selected_world_info[0])
-      : '';
-    return firstNonEmptyString(
-      context.worldName,
-      context.world_name,
-      globalWorld,
-      DEFAULTS.worldId,
-    );
+  function worldCandidates(context) {
+    const candidates = [];
+    const groupId = context.groupId || context.group_id || context.selected_group || null;
+    const group = groupId ? currentGroup(context, groupId) : null;
+    const chatId = String(context.chatId || context.chat_id || context.chat?.id || '');
+    const chatMetadata = context.chatMetadata || context.chat_metadata || {};
+    const globalChatMetadata = window.chat_metadata || window.chatMetadata || {};
+    const scopedChatMetadata =
+      chatId && globalChatMetadata && typeof globalChatMetadata === 'object'
+        ? globalChatMetadata[chatId] || globalChatMetadata[context.chatId] || null
+        : null;
+
+    addWorldCandidates(candidates, chatMetadata, 'context.chatMetadata');
+    addWorldCandidates(candidates, globalChatMetadata, 'window.chat_metadata');
+    addWorldCandidates(candidates, scopedChatMetadata, 'window.chat_metadata[chat_id]');
+    addWorldCandidates(candidates, context.chat?.metadata, 'context.chat.metadata');
+    addWorldCandidates(candidates, context.chat?.chat_metadata, 'context.chat.chat_metadata');
+    addWorldCandidates(candidates, group?.chatMetadata, 'group.chatMetadata');
+    addWorldCandidates(candidates, group?.chat_metadata, 'group.chat_metadata');
+    addWorldCandidates(candidates, group?.metadata, 'group.metadata');
+    addWorldCandidates(candidates, group, 'group');
+    addWorldCandidates(candidates, context.worldInfo, 'context.worldInfo');
+    addWorldCandidates(candidates, context.world_info, 'context.world_info');
+    addWorldCandidates(candidates, context.worldName, 'context.worldName');
+    addWorldCandidates(candidates, context.world_name, 'context.world_name');
+    addWorldCandidates(candidates, window.selected_world_info, 'window.selected_world_info');
+    return dedupeWorldCandidates(candidates);
+  }
+
+  function addWorldCandidates(candidates, value, source) {
+    for (const id of extractWorldIds(value)) {
+      candidates.push({ id, source });
+    }
+  }
+
+  function extractWorldIds(value, depth = 0, allowIdentity = false) {
+    if (value === null || value === undefined || depth > 4) return [];
+    if (typeof value === 'string' || typeof value === 'number') {
+      const text = cleanWorldId(value);
+      return text ? [text] : [];
+    }
+    if (Array.isArray(value)) {
+      return value.flatMap((item) => extractWorldIds(item, depth + 1, true));
+    }
+    if (typeof value !== 'object') return [];
+
+    const directKeys = [
+      'world_info',
+      'worldInfo',
+      'world_info_before',
+      'world_info_after',
+      'world',
+      'worlds',
+      'world_id',
+      'world_ids',
+      'worldName',
+      'world_name',
+      'worldNames',
+      'world_names',
+      'selected_world_info',
+    ];
+    const result = [];
+    for (const key of directKeys) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        result.push(...extractWorldIds(value[key], depth + 1, true));
+      }
+    }
+
+    const identityKeys = ['name', 'id', 'uid', 'filename', 'file_name', 'value'];
+    if (directKeys.some((key) => Object.prototype.hasOwnProperty.call(value, key))) {
+      return result;
+    }
+    if (!allowIdentity) return result;
+    for (const key of identityKeys) {
+      const text = cleanWorldId(value[key]);
+      if (text) result.push(text);
+    }
+    return result;
+  }
+
+  function cleanWorldId(value) {
+    const text = String(value || '').trim();
+    if (!text || text === '[object Object]') return '';
+    return text;
+  }
+
+  function dedupeWorldCandidates(candidates) {
+    const seen = new Set();
+    const result = [];
+    for (const item of candidates) {
+      if (!item.id || seen.has(item.id)) continue;
+      seen.add(item.id);
+      result.push(item);
+    }
+    return result;
+  }
+
+  function uniqueStrings(values) {
+    return Array.from(new Set(values.map((item) => String(item || '').trim()).filter(Boolean)));
   }
 
   function currentExtractionSettings() {
