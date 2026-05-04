@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.23';
+  const EXTENSION_VERSION = '0.2.24';
   const FEATURES = [
     'status',
     'models',
@@ -8,6 +8,7 @@
     'send-last',
     'rebuild-chat',
     'rebuild-job',
+    'rebuild-job-control',
     'retrieve',
     'prompt-preview',
     'debug-chat',
@@ -35,6 +36,7 @@
     busy: false,
     status: 'Idle',
     settings: { ...DEFAULTS },
+    activeRebuildJobId: null,
   };
 
   function getContext() {
@@ -81,6 +83,7 @@
       progressDetail.hidden = !busy;
       progressDetail.textContent = busy ? text : '';
     }
+    updateRebuildControls();
   }
 
   function mountPanel({ force = true } = {}) {
@@ -96,7 +99,12 @@
         <span class="lw-version">v${EXTENSION_VERSION}</span>
         <span id="loreweaver-proxy-status" class="lw-status lw-grow">Idle</span>
       </div>
-      <progress id="loreweaver-proxy-progress" hidden></progress>
+      <div class="lw-progress-row">
+        <progress id="loreweaver-proxy-progress" hidden></progress>
+        <button id="loreweaver-proxy-rebuild-resume" class="lw-job-control" type="button" title="Resume rebuild" aria-label="Resume rebuild" disabled>▶</button>
+        <button id="loreweaver-proxy-rebuild-pause" class="lw-job-control" type="button" title="Pause rebuild" aria-label="Pause rebuild" disabled>Ⅱ</button>
+        <button id="loreweaver-proxy-rebuild-cancel" class="lw-job-control" type="button" title="Stop rebuild" aria-label="Stop rebuild" disabled>■</button>
+      </div>
       <div id="loreweaver-proxy-progress-detail" class="lw-progress-detail" hidden></div>
       <div class="lw-row">
         <label for="loreweaver-proxy-enabled">Enabled</label>
@@ -213,6 +221,9 @@
     });
     panel.querySelector('#loreweaver-proxy-health').addEventListener('click', checkHealth);
     panel.querySelector('#loreweaver-proxy-pending').addEventListener('click', refreshPending);
+    panel.querySelector('#loreweaver-proxy-rebuild-resume').addEventListener('click', resumeRebuildJob);
+    panel.querySelector('#loreweaver-proxy-rebuild-pause').addEventListener('click', pauseRebuildJob);
+    panel.querySelector('#loreweaver-proxy-rebuild-cancel').addEventListener('click', cancelRebuildJob);
     panel.querySelector('#loreweaver-proxy-debug-status').addEventListener('click', debugStatus);
     panel.querySelector('#loreweaver-proxy-models').addEventListener('click', showModels);
     panel.querySelector('#loreweaver-proxy-metadata').addEventListener('click', showMetadata);
@@ -452,6 +463,7 @@
         return;
       }
       const job = await postJson('/v1/memory/rebuild-chat-jobs', request);
+      state.activeRebuildJobId = job.job_id;
       showDebug({ request_summary: summarizeChatSyncRequest(request), job });
       setRebuildProgress(job, 'Queued rebuild job');
       const finalJob = await pollRebuildJob(job.job_id);
@@ -476,7 +488,7 @@
         job = await getJson(`/v1/memory/rebuild-chat-jobs/${encodeURIComponent(jobId)}`);
         transientErrors = 0;
         setRebuildProgress(job);
-        if (job.status === 'completed' || job.status === 'failed') return job;
+        if (isTerminalRebuildStatus(job.status)) return job;
       } catch (error) {
         transientErrors += 1;
         setRebuildProgress(
@@ -489,13 +501,52 @@
     return job || { job_id: jobId, status: 'unknown', error: 'poll timeout' };
   }
 
+  async function pauseRebuildJob() {
+    await controlRebuildJob('pause', 'Pausing rebuild');
+  }
+
+  async function resumeRebuildJob() {
+    await controlRebuildJob('resume', 'Resuming rebuild');
+  }
+
+  async function cancelRebuildJob() {
+    await controlRebuildJob('cancel', 'Stopping rebuild');
+  }
+
+  async function controlRebuildJob(action, label) {
+    const jobId = state.activeRebuildJobId;
+    if (!jobId) {
+      setStatus('No active rebuild job');
+      updateRebuildControls();
+      return;
+    }
+    try {
+      const job = await postJson(
+        `/v1/memory/rebuild-chat-jobs/${encodeURIComponent(jobId)}/${action}`,
+        {},
+      );
+      setRebuildProgress(job, label);
+      showDebug({ job });
+    } catch (error) {
+      setStatus(`Rebuild ${action} failed: ${error.message}`);
+    }
+  }
+
+  function isTerminalRebuildStatus(status) {
+    return ['completed', 'failed', 'cancelled', 'unknown'].includes(String(status || ''));
+  }
+
+  function isActiveRebuildStatus(status) {
+    return ['queued', 'running', 'paused', 'cancelling'].includes(String(status || ''));
+  }
+
   function setRebuildProgress(job, label = '', busy = null) {
     const total = Number(job?.messages_total || 0);
     const processed = Number(job?.messages_processed || 0);
     const records = Number(job?.records || 0);
     const operations = Number(job?.operations || 0);
     const statusText = String(job?.status || 'unknown');
-    const isBusy = busy ?? !['completed', 'failed'].includes(statusText);
+    const isBusy = busy ?? !isTerminalRebuildStatus(statusText);
     const displayProcessed = statusText === 'completed' && total > 0 ? total : processed;
     const percent = total > 0 ? Math.round((Math.min(displayProcessed, total) / total) * 100) : 0;
     const title = label || `Rebuild ${statusText}`;
@@ -510,6 +561,9 @@
 
     state.status = detail;
     state.busy = isBusy;
+    if (job?.job_id) {
+      state.activeRebuildJobId = isTerminalRebuildStatus(statusText) ? null : job.job_id;
+    }
 
     const status = document.querySelector('#loreweaver-proxy-status');
     const progress = document.querySelector('#loreweaver-proxy-progress');
@@ -530,6 +584,18 @@
       progressDetail.hidden = false;
       progressDetail.textContent = job?.error ? `${detail} · ${job.error}` : detail;
     }
+    updateRebuildControls(statusText);
+  }
+
+  function updateRebuildControls(status = '') {
+    const statusText = status || (state.busy ? 'running' : '');
+    const hasActiveJob = Boolean(state.activeRebuildJobId) && isActiveRebuildStatus(statusText);
+    const resume = document.querySelector('#loreweaver-proxy-rebuild-resume');
+    const pause = document.querySelector('#loreweaver-proxy-rebuild-pause');
+    const cancel = document.querySelector('#loreweaver-proxy-rebuild-cancel');
+    if (resume) resume.disabled = !(hasActiveJob && statusText === 'paused');
+    if (pause) pause.disabled = !(hasActiveJob && ['queued', 'running'].includes(statusText));
+    if (cancel) cancel.disabled = !(hasActiveJob && statusText !== 'cancelling');
   }
 
   async function retrieveMemoryPreview() {
