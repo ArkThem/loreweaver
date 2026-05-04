@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.29';
+  const EXTENSION_VERSION = '0.2.30';
   const FEATURES = [
     'status',
     'models',
@@ -320,13 +320,15 @@
     }
   }
 
-  async function buildSTMemoryMetadata(message = {}, fallbackSpeakerType = 'user') {
+  async function buildSTMemoryMetadata(message = {}, fallbackSpeakerType = 'user', options = {}) {
     message = message || {};
     const context = getContext() || {};
     const character = currentCharacter(context);
     const characterId = character ? await characterIdFromCard(character) : null;
     const group = await buildGroupContext(context);
-    const worldBinding = await currentWorldBinding(context);
+    const worldBinding = await currentWorldBinding(context, {
+      includeDiagnostics: Boolean(options.includeWorldDiagnostics),
+    });
     const chatId = String(context.chatId || context.chat_id || context.chat?.id || 'default-chat');
     const messageId = stableMessageId(message, chatMessageIndex(message), chatId);
     const activeCharacter = character
@@ -337,14 +339,14 @@
           aliases: characterAliases(character, context),
         }
       : null;
-    return {
+    const metadata = {
       schema_version: '1.0',
       extension_version: EXTENSION_VERSION,
       user_id: context.name1 || 'default-user',
       profile_id: context.name1 || 'profile_001',
       world_id: worldBinding.world_id,
       world_ids: worldBinding.world_ids,
-      world_binding: worldBinding,
+      world_binding: worldBinding.binding,
       chat_id: chatId,
       mode: context.groupId || context.group_id ? 'group' : 'single',
       memory_scope: 'character_private',
@@ -368,6 +370,8 @@
         include_chat_memory: true,
       },
     };
+    if (worldBinding.diagnostics) metadata.world_binding_diagnostics = worldBinding.diagnostics;
+    return metadata;
   }
 
   async function checkHealth() {
@@ -426,7 +430,7 @@
   }
 
   async function showMetadata() {
-    const metadata = await buildSTMemoryMetadata(lastChatMessage(), 'user');
+    const metadata = await buildSTMemoryMetadata(lastChatMessage(), 'user', { includeWorldDiagnostics: true });
     const activeRebuildJob = await syncActiveRebuildJob(metadata, { silent: true, autoPoll: true });
     showDebug({ ...metadata, active_rebuild_job: activeRebuildJob });
     setStatus('Metadata shown');
@@ -1200,8 +1204,10 @@
     return null;
   }
 
-  async function currentWorldBinding(context) {
-    const slashProbe = await worldSlashCommandProbe(context);
+  async function currentWorldBinding(context, { includeDiagnostics = false } = {}) {
+    const slashProbe = includeDiagnostics
+      ? await worldSlashCommandProbe(context)
+      : { available: false, commands: [], candidates: [] };
     const candidates = worldCandidates(context);
     for (const item of slashProbe.candidates) candidates.push(item);
     const overrideIds = parseWorldList(state.settings.worldId)
@@ -1220,14 +1226,22 @@
     const worldId = sortedIds.length === 1
       ? sortedIds[0]
       : `worldset_${simpleHash(sortedIds.join('|')).slice(0, 16)}`;
+    const source = overrideIds.length
+      ? 'extension_settings.worldId'
+      : candidates.find((item) => sortedIds.includes(item.id))?.source || 'fallback';
     return {
       world_id: worldId,
       world_ids: sortedIds,
-      source: overrideIds.length
-        ? 'extension_settings.worldId'
-        : candidates.find((item) => sortedIds.includes(item.id))?.source || 'fallback',
-      candidates,
-      probe: worldProbe(context, slashProbe),
+      binding: {
+        world_id: worldId,
+        world_ids: sortedIds,
+      },
+      diagnostics: includeDiagnostics
+        ? {
+            resolved_from: source,
+            probe: worldProbe(context, slashProbe),
+          }
+        : null,
     };
   }
 
@@ -1531,36 +1545,13 @@
   function worldProbe(context, slashProbe = null) {
     const groupId = context.groupId || context.group_id || context.selected_group || null;
     const group = groupId ? currentGroup(context, groupId) : null;
-    const chatId = String(context.chatId || context.chat_id || context.chat?.id || '');
     const chatMetadata = context.chatMetadata || context.chat_metadata || {};
-    const globalChatMetadata = window.chat_metadata || window.chatMetadata || {};
-    const scopedChatMetadata =
-      chatId && globalChatMetadata && typeof globalChatMetadata === 'object'
-        ? globalChatMetadata[chatId] || globalChatMetadata[context.chatId] || null
-        : null;
-    const worldInfo = window.world_info || window.worldInfo || context.world_info || context.worldInfo;
     return {
-      context_keys: worldLikeKeys(context),
-      window_keys: worldLikeKeys(window),
-      chat_metadata_keys: worldLikeKeys(chatMetadata),
-      chat_metadata_fields: summarizeWorldFields(chatMetadata),
-      scoped_chat_metadata_keys: worldLikeKeys(scopedChatMetadata || {}),
-      scoped_chat_metadata_fields: summarizeWorldFields(scopedChatMetadata || {}),
-      global_chat_metadata_keys: worldLikeKeys(globalChatMetadata),
-      group_keys: worldLikeKeys(group || {}),
-      selected_world_info: summarizeValue(window.selected_world_info),
-      world_info: summarizeValue(worldInfo),
-      world_info_sample: summarizeWorldInfoCollection(worldInfo),
+      dom_world_controls: domWorldControlsProbe(),
+      slash_commands: slashProbe,
       timed_world_info: summarizeValue(chatMetadata.timedWorldInfo),
       timed_world_info_note: 'diagnostic only; not used as world id source',
-      group_world_fields: summarizeWorldFields(group || {}),
       character_world_fields: characterWorldFieldSummary(context, group),
-      dom_world_controls: domWorldControlsProbe(),
-      command_keys: {
-        context: commandLikeKeys(context),
-        window: commandLikeKeys(window),
-      },
-      slash_commands: slashProbe,
     };
   }
 
