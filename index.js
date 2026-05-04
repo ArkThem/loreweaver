@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.26';
+  const EXTENSION_VERSION = '0.2.28';
   const FEATURES = [
     'status',
     'models',
@@ -37,6 +37,7 @@
     status: 'Idle',
     settings: { ...DEFAULTS },
     activeRebuildJobId: null,
+    rebuildPollJobId: null,
   };
 
   function getContext() {
@@ -325,7 +326,7 @@
     const character = currentCharacter(context);
     const characterId = character ? await characterIdFromCard(character) : null;
     const group = await buildGroupContext(context);
-    const worldBinding = currentWorldBinding(context);
+    const worldBinding = await currentWorldBinding(context);
     const chatId = String(context.chatId || context.chat_id || context.chat?.id || 'default-chat');
     const messageId = stableMessageId(message, chatMessageIndex(message), chatId);
     const activeCharacter = character
@@ -426,7 +427,8 @@
 
   async function showMetadata() {
     const metadata = await buildSTMemoryMetadata(lastChatMessage(), 'user');
-    showDebug(metadata);
+    const activeRebuildJob = await syncActiveRebuildJob(metadata, { silent: true, autoPoll: true });
+    showDebug({ ...metadata, active_rebuild_job: activeRebuildJob });
     setStatus('Metadata shown');
   }
 
@@ -444,6 +446,12 @@
   async function rebuildCurrentChat() {
     try {
       setStatus('Queueing rebuild job', true);
+      const attachedJob = await syncActiveRebuildJob(null, { silent: true, autoPoll: true });
+      if (attachedJob && isActiveRebuildStatus(attachedJob.status)) {
+        showDebug({ attached_rebuild_job: attachedJob });
+        setStatus('Attached existing rebuild job');
+        return;
+      }
       const request = await buildChatSyncRequest();
       if (!request.messages.length) {
         setStatus('No chat messages found');
@@ -454,15 +462,64 @@
       state.activeRebuildJobId = job.job_id;
       showDebug({ request_summary: summarizeChatSyncRequest(request), job });
       setRebuildProgress(job, 'Queued rebuild job');
-      const finalJob = await pollRebuildJob(job.job_id);
-      showDebug({ request_summary: summarizeChatSyncRequest(request), job: finalJob });
-      if (finalJob.status === 'completed') {
-        setRebuildProgress(finalJob, 'Rebuild completed', false);
-      } else {
-        setRebuildProgress(finalJob, `Rebuild ${finalJob.status}`, false);
+      state.rebuildPollJobId = job.job_id;
+      try {
+        const finalJob = await pollRebuildJob(job.job_id);
+        showDebug({ request_summary: summarizeChatSyncRequest(request), job: finalJob });
+        if (finalJob.status === 'completed') {
+          setRebuildProgress(finalJob, 'Rebuild completed', false);
+        } else {
+          setRebuildProgress(finalJob, `Rebuild ${finalJob.status}`, false);
+        }
+      } finally {
+        if (state.rebuildPollJobId === job.job_id) state.rebuildPollJobId = null;
       }
     } catch (error) {
       setStatus(`Rebuild failed: ${error.message}`);
+    }
+  }
+
+  async function syncActiveRebuildJob(metadata = null, { silent = false, autoPoll = false } = {}) {
+    try {
+      metadata = metadata || await buildSTMemoryMetadata(lastChatMessage(), 'user');
+      const exactParams = new URLSearchParams({
+        chat_id: metadata.chat_id,
+        world_id: metadata.world_id,
+        active: 'true',
+        limit: '5',
+      });
+      let response = await getJson(`/v1/memory/rebuild-chat-jobs?${exactParams.toString()}`);
+      let jobs = response.items || [];
+      if (!jobs.length) {
+        const chatParams = new URLSearchParams({
+          chat_id: metadata.chat_id,
+          active: 'true',
+          limit: '5',
+        });
+        response = await getJson(`/v1/memory/rebuild-chat-jobs?${chatParams.toString()}`);
+        jobs = response.items || [];
+      }
+      const job = jobs.find((item) => isActiveRebuildStatus(item.status)) || null;
+      if (!job) {
+        if (!silent) setStatus('No active rebuild job found');
+        updateRebuildControls();
+        return null;
+      }
+      setRebuildProgress(job, 'Attached rebuild job');
+      if (!silent) showDebug({ attached_rebuild_job: job });
+      if (autoPoll && state.rebuildPollJobId !== job.job_id) {
+        state.rebuildPollJobId = job.job_id;
+        pollRebuildJob(job.job_id)
+          .then((finalJob) => setRebuildProgress(finalJob, `Rebuild ${finalJob.status}`, false))
+          .catch((error) => setStatus(`Rebuild poll failed: ${error.message}`))
+          .finally(() => {
+            if (state.rebuildPollJobId === job.job_id) state.rebuildPollJobId = null;
+          });
+      }
+      return job;
+    } catch (error) {
+      if (!silent) setStatus(`Rebuild job sync failed: ${error.message}`);
+      return null;
     }
   }
 
@@ -1143,8 +1200,10 @@
     return null;
   }
 
-  function currentWorldBinding(context) {
+  async function currentWorldBinding(context) {
+    const slashProbe = await worldSlashCommandProbe(context);
     const candidates = worldCandidates(context);
+    for (const item of slashProbe.candidates) candidates.push(item);
     const overrideIds = parseWorldList(state.settings.worldId)
       .filter((item) => item && item !== DEFAULTS.worldId);
     let worldIds = overrideIds.length ? overrideIds : uniqueStrings(candidates.map((item) => item.id));
@@ -1168,7 +1227,7 @@
         ? 'extension_settings.worldId'
         : candidates.find((item) => sortedIds.includes(item.id))?.source || 'fallback',
       candidates,
-      probe: worldProbe(context),
+      probe: worldProbe(context, slashProbe),
     };
   }
 
@@ -1200,8 +1259,32 @@
     addWorldCandidates(candidates, context.worldName, 'context.worldName');
     addWorldCandidates(candidates, context.world_name, 'context.world_name');
     addWorldCandidates(candidates, window.selected_world_info, 'window.selected_world_info');
+    addCharacterWorldCandidates(candidates, currentCharacter(context), 'active_character');
+    for (const card of groupCharacterCards(context, group)) {
+      addCharacterWorldCandidates(candidates, card, `group_member.${card?.name || card?.avatar || 'unknown'}`);
+    }
     for (const item of scanWorldLikeCandidates(context, 'context')) candidates.push(item);
     return dedupeWorldCandidates(candidates);
+  }
+
+  function addCharacterWorldCandidates(candidates, card, source) {
+    if (!card || typeof card !== 'object') return;
+    addWorldCandidates(candidates, card.data?.extensions?.world, `${source}.data.extensions.world`);
+    addWorldCandidates(candidates, card.data?.extensions?.world_info, `${source}.data.extensions.world_info`);
+    addWorldCandidates(candidates, card.data?.extensions?.worldInfo, `${source}.data.extensions.worldInfo`);
+    addWorldCandidates(candidates, card.data?.character_book?.name, `${source}.data.character_book.name`);
+    addWorldCandidates(candidates, card.character_book?.name, `${source}.character_book.name`);
+  }
+
+  function groupCharacterCards(context, group) {
+    const result = [];
+    const add = (card) => {
+      if (!card || result.includes(card)) return;
+      result.push(card);
+    };
+    const memberRefs = Array.isArray(group?.members) ? group.members : [];
+    for (const ref of memberRefs) add(characterFromMemberRef(context, ref));
+    return result;
   }
 
   function addWorldCandidates(candidates, value, source) {
@@ -1338,7 +1421,71 @@
     return dedupeWorldCandidates(results);
   }
 
-  function worldProbe(context) {
+  async function worldSlashCommandProbe(context) {
+    const result = {
+      available: false,
+      commands: [],
+      candidates: [],
+    };
+    const execute =
+      typeof context.executeSlashCommandsWithOptions === 'function'
+        ? context.executeSlashCommandsWithOptions
+        : typeof window.executeSlashCommandsWithOptions === 'function'
+          ? window.executeSlashCommandsWithOptions
+          : null;
+    if (!execute) return result;
+    result.available = true;
+
+    const run = async (command, source) => {
+      const item = { command, source, pipe: null, error: null };
+      try {
+        const response = await execute(command, {
+          handleParserErrors: false,
+          handleExecutionErrors: true,
+          source: 'LoreWeaver world binding probe',
+        });
+        item.pipe = slashCommandPipe(response);
+        item.is_error = Boolean(response?.isError);
+        item.error = response?.errorMessage || null;
+        for (const id of slashPipeWorldIds(item.pipe)) {
+          result.candidates.push({ id, source });
+        }
+      } catch (error) {
+        item.error = error?.message || String(error);
+      }
+      result.commands.push(item);
+    };
+
+    if (document.querySelector('.chat_lorebook_button.world_set')) {
+      await run('/getchatbook', 'stscript.getchatbook');
+    } else {
+      result.commands.push({
+        command: '/getchatbook',
+        source: 'stscript.getchatbook',
+        pipe: null,
+        error: null,
+        skipped: 'chat lore button is not marked as bound; skipped to avoid creating an empty chat lorebook',
+      });
+    }
+    await run('/getglobalbooks', 'stscript.getglobalbooks');
+    return result;
+  }
+
+  function slashCommandPipe(response) {
+    if (response === null || response === undefined) return null;
+    if (Object.prototype.hasOwnProperty.call(response, 'pipe')) return response.pipe;
+    if (Object.prototype.hasOwnProperty.call(response, 'value')) return response.value;
+    if (Object.prototype.hasOwnProperty.call(response, 'result')) return response.result;
+    return response;
+  }
+
+  function slashPipeWorldIds(value) {
+    if (value === null || value === undefined) return [];
+    if (typeof value === 'string' || typeof value === 'number') return parseWorldList(value);
+    return extractWorldIds(value, 0, true);
+  }
+
+  function worldProbe(context, slashProbe = null) {
     const groupId = context.groupId || context.group_id || context.selected_group || null;
     const group = groupId ? currentGroup(context, groupId) : null;
     const chatId = String(context.chatId || context.chat_id || context.chat?.id || '');
@@ -1364,10 +1511,12 @@
       timed_world_info: summarizeValue(chatMetadata.timedWorldInfo),
       timed_world_info_note: 'diagnostic only; not used as world id source',
       group_world_fields: summarizeWorldFields(group || {}),
+      dom_world_controls: domWorldControlsProbe(),
       command_keys: {
         context: commandLikeKeys(context),
         window: commandLikeKeys(window),
       },
+      slash_commands: slashProbe,
     };
   }
 
@@ -1448,6 +1597,33 @@
     } catch {
       return [];
     }
+  }
+
+  function domWorldControlsProbe() {
+    const chatLoreButton = document.querySelector('.chat_lorebook_button');
+    const worldInfoSelect = document.querySelector('#world_info');
+    const worldEditorSelect = document.querySelector('#world_editor_select');
+    return {
+      chat_lore_button_present: Boolean(chatLoreButton),
+      chat_lore_button_world_set: Boolean(chatLoreButton?.classList?.contains('world_set')),
+      world_info_value: summarizeControlValue(worldInfoSelect),
+      world_editor_value: summarizeControlValue(worldEditorSelect),
+    };
+  }
+
+  function summarizeControlValue(element) {
+    if (!element) return null;
+    if (element instanceof HTMLSelectElement) {
+      const selected = Array.from(element.selectedOptions || []).map((option) => ({
+        value: option.value,
+        text: option.textContent,
+      }));
+      return {
+        value: Array.isArray(element.value) ? element.value : element.value || null,
+        selected,
+      };
+    }
+    return element.value ?? null;
   }
 
   function summarizeValue(value) {
@@ -1856,6 +2032,7 @@
     loadSettings();
     mountPanel();
     bindEvents();
+    setTimeout(() => syncActiveRebuildJob(null, { silent: true, autoPoll: true }), 800);
     window.LoreWeaverProxy = {
       version: EXTENSION_VERSION,
       features: FEATURES,
@@ -1871,6 +2048,7 @@
       hardReset,
       runUISmokeTests,
       refreshPending,
+      syncActiveRebuildJob,
       checkHealth,
       rerender: () => mountPanel({ force: true }),
       clearDebug,
