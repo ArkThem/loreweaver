@@ -107,11 +107,15 @@
 }
 
 #loreweaver-proxy-panel .lw-progress-detail {
+  background: rgba(31, 95, 134, 0.16);
+  border-left: 3px solid #2e87bd;
+  border-radius: 4px;
   font-family: var(--monoFontFamily, monospace);
   font-size: 0.82em;
   margin-top: 4px;
   opacity: 0.78;
   overflow-wrap: anywhere;
+  padding: 4px 6px;
 }
 
 #loreweaver-proxy-panel .lw-ops {

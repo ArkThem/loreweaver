@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.30';
+  const EXTENSION_VERSION = '0.2.31';
   const FEATURES = [
     'status',
     'models',
@@ -38,6 +38,8 @@
     settings: { ...DEFAULTS },
     activeRebuildJobId: null,
     rebuildPollJobId: null,
+    rebuildAutoAttachTimer: null,
+    rebuildAutoAttachStartedAt: 0,
   };
 
   function getContext() {
@@ -232,6 +234,7 @@
       const output = panel.querySelector('#loreweaver-proxy-debug-output');
       copyText(output?.textContent || '', 'Debug output copied');
     });
+    scheduleActiveRebuildProbe('panel mounted');
   }
 
   function bindEvents() {
@@ -261,7 +264,10 @@
       on(eventTypes.MESSAGE_DELETED, (message) => sendMessageEvent('message_deleted', message, 'system'));
     }
     if (eventTypes.CHAT_CHANGED) {
-      on(eventTypes.CHAT_CHANGED, () => setStatus('Chat changed'));
+      on(eventTypes.CHAT_CHANGED, () => {
+        setStatus('Chat changed');
+        scheduleActiveRebuildProbe('chat changed');
+      });
     }
   }
 
@@ -527,6 +533,34 @@
     }
   }
 
+  function scheduleActiveRebuildProbe(reason = 'startup') {
+    if (!state.settings.enabled || !state.settings.proxyUrl) return;
+    if (state.rebuildPollJobId || state.activeRebuildJobId) return;
+    if (!state.rebuildAutoAttachStartedAt) {
+      state.rebuildAutoAttachStartedAt = Date.now();
+    }
+    if (state.rebuildAutoAttachTimer) clearTimeout(state.rebuildAutoAttachTimer);
+    const elapsed = Date.now() - state.rebuildAutoAttachStartedAt;
+    if (elapsed > 90 * 1000) {
+      state.rebuildAutoAttachStartedAt = 0;
+      state.rebuildAutoAttachTimer = null;
+      return;
+    }
+    state.rebuildAutoAttachTimer = setTimeout(async () => {
+      state.rebuildAutoAttachTimer = null;
+      try {
+        const job = await syncActiveRebuildJob(null, { silent: true, autoPoll: true });
+        if (job) {
+          state.rebuildAutoAttachStartedAt = 0;
+          return;
+        }
+      } catch {
+        // Retry below. Startup can race SillyTavern context and extension settings.
+      }
+      scheduleActiveRebuildProbe(reason);
+    }, elapsed < 5000 ? 800 : 3000);
+  }
+
   async function pollRebuildJob(jobId) {
     if (!jobId) throw new Error('rebuild job_id missing');
     let job = null;
@@ -599,16 +633,24 @@
     const displayProcessed = statusText === 'completed' && total > 0 ? total : processed;
     const percent = total > 0 ? Math.round((Math.min(displayProcessed, total) / total) * 100) : 0;
     const title = label || `Rebuild ${statusText}`;
-    const detailParts = [
+    const summaryParts = [
       `${title}: ${displayProcessed}/${total || '?'} messages`,
       total > 0 ? `${percent}%` : null,
       `${records} records`,
       `${operations} operations`,
       job?.job_id ? `job ${job.job_id}` : null,
     ].filter(Boolean);
-    const detail = detailParts.join(' · ');
+    const summary = summaryParts.join(' · ');
+    const currentText = compactPreview(job?.current_item_text || job?.current_message_preview || '');
+    const currentStage = job?.current_item_stage || (job?.current_message_id ? 'processing' : '');
+    const currentLine = currentText
+      ? `${currentStage ? labelForCurrentStage(currentStage) : 'Current'}: ${currentText}`
+      : '';
+    const detail = job?.error
+      ? `Error: ${job.error}`
+      : currentLine || (isBusy ? 'Waiting for the next processed item...' : `Rebuild ${statusText}`);
 
-    state.status = detail;
+    state.status = summary;
     state.busy = isBusy;
     if (job?.job_id) {
       state.activeRebuildJobId = isTerminalRebuildStatus(statusText) ? null : job.job_id;
@@ -618,7 +660,7 @@
     const progress = document.querySelector('#loreweaver-proxy-progress');
     const progressDetail = document.querySelector('#loreweaver-proxy-progress-detail');
 
-    if (status) status.textContent = detail;
+    if (status) status.textContent = summary;
     if (progress) {
       progress.hidden = false;
       if (total > 0) {
@@ -631,9 +673,22 @@
     }
     if (progressDetail) {
       progressDetail.hidden = false;
-      progressDetail.textContent = job?.error ? `${detail} · ${job.error}` : detail;
+      progressDetail.textContent = detail;
     }
     updateRebuildControls(statusText);
+  }
+
+  function labelForCurrentStage(stage) {
+    const normalized = String(stage || '').toLowerCase();
+    if (normalized === 'embedding') return 'Embedding';
+    if (normalized === 'extracting') return 'Extracting';
+    if (normalized === 'completed') return 'Completed';
+    return 'Processing';
+  }
+
+  function compactPreview(value, limit = 180) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    return text.length <= limit ? text : `${text.slice(0, limit - 1).trimEnd()}…`;
   }
 
   function updateRebuildControls(status = '') {
@@ -2067,7 +2122,7 @@
     loadSettings();
     mountPanel();
     bindEvents();
-    setTimeout(() => syncActiveRebuildJob(null, { silent: true, autoPoll: true }), 800);
+    scheduleActiveRebuildProbe('init');
     window.LoreWeaverProxy = {
       version: EXTENSION_VERSION,
       features: FEATURES,
