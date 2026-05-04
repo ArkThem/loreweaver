@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.20';
+  const EXTENSION_VERSION = '0.2.21';
   const FEATURES = [
     'status',
     'models',
@@ -108,6 +108,10 @@
         <button id="loreweaver-proxy-health" type="button">Check</button>
       </div>
       <div class="lw-row">
+        <label for="loreweaver-proxy-worlds">Worlds</label>
+        <input id="loreweaver-proxy-worlds" class="lw-grow" type="text" placeholder="auto, or comma-separated world ids">
+      </div>
+      <div class="lw-row">
         <label for="loreweaver-proxy-mode">Mode</label>
         <select id="loreweaver-proxy-mode">
           <option value="draft">Draft</option>
@@ -162,12 +166,14 @@
 
     const enabled = panel.querySelector('#loreweaver-proxy-enabled');
     const url = panel.querySelector('#loreweaver-proxy-url');
+    const worlds = panel.querySelector('#loreweaver-proxy-worlds');
     const mode = panel.querySelector('#loreweaver-proxy-mode');
     const extractorNarrative = panel.querySelector('#loreweaver-proxy-extractor-narrative');
     const extractorModel = panel.querySelector('#loreweaver-proxy-extractor-model');
     const extractorTemp = panel.querySelector('#loreweaver-proxy-extractor-temp');
     enabled.checked = Boolean(state.settings.enabled);
     url.value = state.settings.proxyUrl;
+    worlds.value = state.settings.worldId === DEFAULTS.worldId ? '' : state.settings.worldId;
     mode.value = state.settings.automationMode;
     extractorNarrative.checked = Boolean(state.settings.extractorUseNarrativeModel);
     extractorModel.value = state.settings.extractorModel || '';
@@ -181,6 +187,10 @@
     });
     url.addEventListener('change', () => {
       state.settings.proxyUrl = url.value.trim().replace(/\/$/, '') || DEFAULTS.proxyUrl;
+      saveSettings();
+    });
+    worlds.addEventListener('change', () => {
+      state.settings.worldId = worlds.value.trim() || DEFAULTS.worldId;
       saveSettings();
     });
     mode.addEventListener('change', () => {
@@ -1081,14 +1091,16 @@
 
   function currentWorldBinding(context) {
     const candidates = worldCandidates(context);
-    let worldIds = uniqueStrings(candidates.map((item) => item.id));
+    const overrideIds = parseWorldList(state.settings.worldId)
+      .filter((item) => item && item !== DEFAULTS.worldId);
+    let worldIds = overrideIds.length ? overrideIds : uniqueStrings(candidates.map((item) => item.id));
     if (worldIds.length > 1) {
       worldIds = worldIds.filter((item) => item !== DEFAULTS.worldId);
     }
-    const explicitOverride = firstNonEmptyString(state.settings.worldId);
-    if (!worldIds.length && explicitOverride && explicitOverride !== DEFAULTS.worldId) {
-      worldIds = [explicitOverride];
-      candidates.push({ id: explicitOverride, source: 'extension_settings.worldId' });
+    if (overrideIds.length) {
+      for (const id of overrideIds) {
+        candidates.push({ id, source: 'extension_settings.worldId' });
+      }
     }
     if (!worldIds.length) worldIds = [DEFAULTS.worldId];
     const sortedIds = [...worldIds].sort((left, right) => left.localeCompare(right));
@@ -1098,8 +1110,11 @@
     return {
       world_id: worldId,
       world_ids: sortedIds,
-      source: candidates.find((item) => sortedIds.includes(item.id))?.source || 'fallback',
+      source: overrideIds.length
+        ? 'extension_settings.worldId'
+        : candidates.find((item) => sortedIds.includes(item.id))?.source || 'fallback',
       candidates,
+      probe: worldProbe(context),
     };
   }
 
@@ -1116,7 +1131,9 @@
         : null;
 
     addWorldCandidates(candidates, chatMetadata, 'context.chatMetadata');
-    addWorldCandidates(candidates, globalChatMetadata, 'window.chat_metadata');
+    if (hasDirectWorldKeys(globalChatMetadata)) {
+      addWorldCandidates(candidates, globalChatMetadata, 'window.chat_metadata');
+    }
     addWorldCandidates(candidates, scopedChatMetadata, 'window.chat_metadata[chat_id]');
     addWorldCandidates(candidates, context.chat?.metadata, 'context.chat.metadata');
     addWorldCandidates(candidates, context.chat?.chat_metadata, 'context.chat.chat_metadata');
@@ -1129,12 +1146,29 @@
     addWorldCandidates(candidates, context.worldName, 'context.worldName');
     addWorldCandidates(candidates, context.world_name, 'context.world_name');
     addWorldCandidates(candidates, window.selected_world_info, 'window.selected_world_info');
+    for (const item of scanWorldLikeCandidates(context, 'context')) candidates.push(item);
     return dedupeWorldCandidates(candidates);
   }
 
   function addWorldCandidates(candidates, value, source) {
     for (const id of extractWorldIds(value)) {
       candidates.push({ id, source });
+    }
+  }
+
+  function addWorldCandidatesForKey(candidates, key, value, source) {
+    for (const id of extractWorldIds(value, 0, true)) {
+      candidates.push({ id, source });
+    }
+    if (
+      value
+      && typeof value === 'object'
+      && !Array.isArray(value)
+      && /^(world_info|worldinfo|worlds|world_names?|worldnames?|selected_world_info)$/i.test(key)
+    ) {
+      for (const id of Object.keys(value).map((item) => cleanWorldId(item)).filter(Boolean)) {
+        candidates.push({ id, source: `${source} keys` });
+      }
     }
   }
 
@@ -1184,9 +1218,105 @@
   }
 
   function cleanWorldId(value) {
+    if (typeof value === 'boolean') return '';
     const text = String(value || '').trim();
     if (!text || text === '[object Object]') return '';
+    if (['true', 'false', 'null', 'undefined'].includes(text.toLowerCase())) return '';
     return text;
+  }
+
+  function parseWorldList(value) {
+    return uniqueStrings(String(value || '').split(/[,;\n]+/).map((item) => cleanWorldId(item)));
+  }
+
+  function hasDirectWorldKeys(value) {
+    if (!value || typeof value !== 'object') return false;
+    try {
+      return Object.keys(value).some((key) =>
+        /^(world_info|worldInfo|world_info_before|world_info_after|world|worlds|world_id|world_ids|worldName|world_name|worldNames|world_names|selected_world_info)$/i.test(key),
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function scanWorldLikeCandidates(root, source, maxDepth = 3) {
+    const results = [];
+    const seen = new WeakSet();
+    const keyPattern = /^(world|worlds|world_info|worldinfo|worldnames?|world_names?|selected_world_info|chat_lore|chatlore|lorebook|lorebooks)$/i;
+    const broadPattern = /(world|lore)/i;
+    const walk = (value, path, depth) => {
+      if (!value || typeof value !== 'object' || depth > maxDepth || seen.has(value)) return;
+      seen.add(value);
+      let entries = [];
+      try {
+        entries = Object.entries(value);
+      } catch {
+        return;
+      }
+      for (const [key, child] of entries) {
+        const childPath = path ? `${path}.${key}` : key;
+        if (keyPattern.test(key)) {
+          addWorldCandidatesForKey(results, key, child, `${source}.${childPath}`);
+        }
+        if (broadPattern.test(key) || key === 'metadata' || key === 'chat_metadata') {
+          walk(child, childPath, depth + 1);
+        }
+      }
+    };
+    walk(root, '', 0);
+    return dedupeWorldCandidates(results);
+  }
+
+  function worldProbe(context) {
+    const groupId = context.groupId || context.group_id || context.selected_group || null;
+    const group = groupId ? currentGroup(context, groupId) : null;
+    return {
+      context_keys: worldLikeKeys(context),
+      window_keys: worldLikeKeys(window),
+      chat_metadata_keys: worldLikeKeys(context.chatMetadata || context.chat_metadata || {}),
+      global_chat_metadata_keys: worldLikeKeys(window.chat_metadata || window.chatMetadata || {}),
+      group_keys: worldLikeKeys(group || {}),
+      selected_world_info: summarizeValue(window.selected_world_info),
+      world_info: summarizeValue(window.world_info || window.worldInfo),
+      group_world_fields: summarizeWorldFields(group || {}),
+    };
+  }
+
+  function worldLikeKeys(value) {
+    if (!value || typeof value !== 'object') return [];
+    try {
+      return Object.keys(value)
+        .filter((key) => /(world|lore|metadata|chat)/i.test(key))
+        .slice(0, 80);
+    } catch {
+      return [];
+    }
+  }
+
+  function summarizeWorldFields(value) {
+    if (!value || typeof value !== 'object') return {};
+    const result = {};
+    for (const key of worldLikeKeys(value)) {
+      result[key] = summarizeValue(value[key]);
+    }
+    return result;
+  }
+
+  function summarizeValue(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+    if (Array.isArray(value)) return value.slice(0, 12).map((item) => summarizeValue(item));
+    if (typeof value !== 'object') return typeof value;
+    const result = {};
+    let count = 0;
+    for (const [key, child] of Object.entries(value)) {
+      if (count >= 12) break;
+      if (typeof child === 'function') continue;
+      result[key] = typeof child === 'object' && child !== null ? `[${Array.isArray(child) ? 'array' : 'object'}]` : child;
+      count += 1;
+    }
+    return result;
   }
 
   function dedupeWorldCandidates(candidates) {
