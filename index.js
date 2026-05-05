@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.31';
+  const EXTENSION_VERSION = '0.2.32';
   const FEATURES = [
     'status',
     'models',
@@ -28,6 +28,7 @@
     sendEvents: true,
     extractorUseNarrativeModel: false,
     extractorModel: '',
+    narrativeModelOverride: '',
     extractorTemperature: 0,
     extractorMaxTokens: 3000,
   };
@@ -137,7 +138,7 @@
       </div>
       <div class="lw-row">
         <label for="loreweaver-proxy-extractor-model">Model</label>
-        <input id="loreweaver-proxy-extractor-model" class="lw-grow" list="loreweaver-proxy-model-options" placeholder="empty = proxy default extractor" title="Dedicated extraction model override. Disabled when Use narrative model is on; then the proxy uses the active narrative/chat model.">
+        <input id="loreweaver-proxy-extractor-model" class="lw-grow" list="loreweaver-proxy-model-options" placeholder="empty = proxy default extractor" title="Extraction model override. In narrative mode, leave empty to send the current SillyTavern chat model; type a model id to override it.">
         <datalist id="loreweaver-proxy-model-options"></datalist>
         <label class="lw-inline-label" for="loreweaver-proxy-extractor-temp">Temp</label>
         <input id="loreweaver-proxy-extractor-temp" class="lw-number" type="number" min="0" max="2" step="0.05">
@@ -178,11 +179,10 @@
     worlds.value = state.settings.worldId === DEFAULTS.worldId ? '' : state.settings.worldId;
     mode.value = state.settings.automationMode;
     extractorNarrative.checked = Boolean(state.settings.extractorUseNarrativeModel);
-    extractorModel.value = state.settings.extractorModel || '';
+    syncExtractorModelField(extractorNarrative, extractorModel);
     extractorTemp.value = Number.isFinite(Number(state.settings.extractorTemperature))
       ? String(Number(state.settings.extractorTemperature))
       : '0';
-    updateExtractorModelControl(extractorNarrative, extractorModel);
 
     enabled.addEventListener('change', () => {
       state.settings.enabled = enabled.checked;
@@ -202,15 +202,15 @@
     });
     extractorNarrative.addEventListener('change', () => {
       state.settings.extractorUseNarrativeModel = extractorNarrative.checked;
-      if (extractorNarrative.checked) {
-        state.settings.extractorModel = '';
-        extractorModel.value = '';
-      }
-      updateExtractorModelControl(extractorNarrative, extractorModel);
+      syncExtractorModelField(extractorNarrative, extractorModel);
       saveSettings();
     });
     extractorModel.addEventListener('change', () => {
-      state.settings.extractorModel = extractorModel.value.trim();
+      if (extractorNarrative.checked) {
+        state.settings.narrativeModelOverride = extractorModel.value.trim();
+      } else {
+        state.settings.extractorModel = extractorModel.value.trim();
+      }
       saveSettings();
     });
     extractorModel.addEventListener('focus', loadModelOptions);
@@ -358,7 +358,7 @@
       memory_scope: 'character_private',
       active_character: activeCharacter,
       group,
-      extraction: currentExtractionSettings(),
+      extraction: await currentExtractionSettings(context),
       message: {
         message_id: messageId,
         parent_message_id: null,
@@ -1747,27 +1747,127 @@
     return Array.from(new Set(values.map((item) => String(item || '').trim()).filter(Boolean)));
   }
 
-  function currentExtractionSettings() {
+  async function currentExtractionSettings(context = getContext() || {}) {
     const useNarrativeModel = Boolean(state.settings.extractorUseNarrativeModel);
+    const manualModel = currentModelOverrideForMode(useNarrativeModel);
+    let model = manualModel;
+    let modelSource = manualModel
+      ? (useNarrativeModel ? 'ui.narrative_model_override' : 'ui.extraction_model_override')
+      : '';
+    if (useNarrativeModel && !model) {
+      const detected = await currentSillyTavernChatModel(context);
+      if (detected.model) {
+        model = detected.model;
+        modelSource = detected.source;
+      }
+    }
     return {
       use_narrative_model: useNarrativeModel,
-      model: useNarrativeModel ? null : String(state.settings.extractorModel || '').trim() || null,
+      model: model || null,
+      model_source: modelSource || (
+        useNarrativeModel ? 'proxy.chat_env_fallback' : 'proxy.extraction_env_fallback'
+      ),
       temperature: clampNumber(state.settings.extractorTemperature, 0, 2, 0),
       max_tokens: Math.round(clampNumber(state.settings.extractorMaxTokens, 256, 12000, 3000)),
     };
   }
 
+  function syncExtractorModelField(extractorNarrative, extractorModel) {
+    if (!extractorModel) return;
+    extractorModel.value = extractorNarrative?.checked
+      ? state.settings.narrativeModelOverride || ''
+      : state.settings.extractorModel || '';
+    updateExtractorModelControl(extractorNarrative, extractorModel);
+  }
+
+  function currentModelOverrideForMode(useNarrativeModel) {
+    const liveInput = document.querySelector('#loreweaver-proxy-extractor-model');
+    const liveNarrative = document.querySelector('#loreweaver-proxy-extractor-narrative');
+    if (liveInput && Boolean(liveNarrative?.checked) === Boolean(useNarrativeModel)) {
+      return String(liveInput.value || '').trim();
+    }
+    return String(
+      useNarrativeModel
+        ? state.settings.narrativeModelOverride || ''
+        : state.settings.extractorModel || '',
+    ).trim();
+  }
+
   function updateExtractorModelControl(extractorNarrative, extractorModel) {
     const usesNarrative = Boolean(extractorNarrative?.checked);
     if (!extractorModel) return;
-    extractorModel.disabled = usesNarrative;
+    extractorModel.disabled = false;
     extractorModel.placeholder = usesNarrative
-      ? 'using narrative/chat model'
+      ? 'empty = current SillyTavern model'
       : 'empty = proxy default extractor';
     extractorModel.title = usesNarrative
-      ? 'Narrative extraction uses the current SillyTavern chat/narrative model. This model override is ignored and cleared.'
-      : 'Dedicated extraction model override. Example: qwen3-14b-extractor.';
-    extractorModel.classList.toggle('lw-disabled-input', usesNarrative);
+      ? 'Narrative extraction model override. Leave empty to send the current SillyTavern chat/narrative model in the request body; type a model id to override env/defaults.'
+      : 'Dedicated extraction model override. Empty means proxy env/default extractor. Example: qwen3-14b-extractor.';
+    extractorModel.classList.remove('lw-disabled-input');
+  }
+
+  async function currentSillyTavernChatModel(context = getContext() || {}) {
+    const candidates = [];
+    const add = (value, source) => {
+      const model = coerceModelName(value);
+      if (model) candidates.push({ model, source });
+    };
+    const call = async (owner, name, source) => {
+      try {
+        if (typeof owner?.[name] === 'function') {
+          add(await owner[name](), source);
+        }
+      } catch {
+        // SillyTavern APIs differ by version; keep probing other known shapes.
+      }
+    };
+
+    await call(context, 'getChatCompletionModel', 'context.getChatCompletionModel');
+    await call(window, 'getChatCompletionModel', 'window.getChatCompletionModel');
+    add(context.chatCompletionSettings?.model, 'context.chatCompletionSettings.model');
+    add(context.chatCompletionSettings?.model_name, 'context.chatCompletionSettings.model_name');
+    add(context.chatCompletionSettings?.modelName, 'context.chatCompletionSettings.modelName');
+    add(context.chatCompletionSettings?.modelId, 'context.chatCompletionSettings.modelId');
+    add(context.chatCompletionSettings?.chat_model, 'context.chatCompletionSettings.chat_model');
+    add(context.chatCompletionSettings?.chatModel, 'context.chatCompletionSettings.chatModel');
+    add(context.chatCompletionSettings?.completion_model, 'context.chatCompletionSettings.completion_model');
+    add(context.chatCompletionSettings?.selected_model, 'context.chatCompletionSettings.selected_model');
+    add(context.chatCompletionSettings?.selectedModel, 'context.chatCompletionSettings.selectedModel');
+    add(context.chat_model, 'context.chat_model');
+    add(context.chatModel, 'context.chatModel');
+
+    return candidates[0] || { model: '', source: '' };
+  }
+
+  function coerceModelName(value) {
+    if (typeof value === 'string' || typeof value === 'number') {
+      return String(value).trim();
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const model = coerceModelName(item);
+        if (model) return model;
+      }
+      return '';
+    }
+    if (!value || typeof value !== 'object') return '';
+    for (const key of [
+      'model',
+      'id',
+      'name',
+      'value',
+      'model_name',
+      'modelName',
+      'modelId',
+      'chat_model',
+      'chatModel',
+      'selected_model',
+      'selectedModel',
+    ]) {
+      const model = coerceModelName(value[key]);
+      if (model) return model;
+    }
+    return '';
   }
 
   function firstNonEmptyString(...values) {
