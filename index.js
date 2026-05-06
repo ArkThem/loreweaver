@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.32';
+  const EXTENSION_VERSION = '0.2.33';
   const FEATURES = [
     'status',
     'models',
@@ -31,6 +31,11 @@
     narrativeModelOverride: '',
     extractorTemperature: 0,
     extractorMaxTokens: 3000,
+    rerankMode: 'env',
+    rerankModel: '',
+    rerankTemperature: 0,
+    rerankTopK: 16,
+    rerankMaxTokens: 512,
   };
 
   const state = {
@@ -143,6 +148,17 @@
         <label class="lw-inline-label" for="loreweaver-proxy-extractor-temp">Temp</label>
         <input id="loreweaver-proxy-extractor-temp" class="lw-number" type="number" min="0" max="2" step="0.05">
       </div>
+      <div class="lw-row">
+        <label for="loreweaver-proxy-rerank-mode">Rerank</label>
+        <select id="loreweaver-proxy-rerank-mode" title="Runtime rerank override for retrieval. Env uses proxy defaults; On/Off is sent in request metadata.">
+          <option value="env">Env</option>
+          <option value="on">On</option>
+          <option value="off">Off</option>
+        </select>
+        <input id="loreweaver-proxy-rerank-model" class="lw-grow" list="loreweaver-proxy-model-options" placeholder="empty = proxy rerank default" title="Optional rerank model override sent in retrieval metadata.">
+        <label class="lw-inline-label" for="loreweaver-proxy-rerank-top-k">TopK</label>
+        <input id="loreweaver-proxy-rerank-top-k" class="lw-number" type="number" min="1" max="64" step="1" title="How many retrieved records the reranker may reorder.">
+      </div>
       <div class="lw-row lw-wrap">
         <button id="loreweaver-proxy-metadata" type="button">Metadata</button>
         <button id="loreweaver-proxy-rebuild" type="button">Rebuild Chat</button>
@@ -174,6 +190,9 @@
     const extractorNarrative = panel.querySelector('#loreweaver-proxy-extractor-narrative');
     const extractorModel = panel.querySelector('#loreweaver-proxy-extractor-model');
     const extractorTemp = panel.querySelector('#loreweaver-proxy-extractor-temp');
+    const rerankMode = panel.querySelector('#loreweaver-proxy-rerank-mode');
+    const rerankModel = panel.querySelector('#loreweaver-proxy-rerank-model');
+    const rerankTopK = panel.querySelector('#loreweaver-proxy-rerank-top-k');
     enabled.checked = Boolean(state.settings.enabled);
     url.value = state.settings.proxyUrl;
     worlds.value = state.settings.worldId === DEFAULTS.worldId ? '' : state.settings.worldId;
@@ -183,6 +202,11 @@
     extractorTemp.value = Number.isFinite(Number(state.settings.extractorTemperature))
       ? String(Number(state.settings.extractorTemperature))
       : '0';
+    rerankMode.value = ['env', 'on', 'off'].includes(state.settings.rerankMode)
+      ? state.settings.rerankMode
+      : 'env';
+    rerankModel.value = state.settings.rerankModel || '';
+    rerankTopK.value = String(Math.round(clampNumber(state.settings.rerankTopK, 1, 64, 16)));
 
     enabled.addEventListener('change', () => {
       state.settings.enabled = enabled.checked;
@@ -217,6 +241,22 @@
     extractorTemp.addEventListener('change', () => {
       state.settings.extractorTemperature = clampNumber(extractorTemp.value, 0, 2, 0);
       extractorTemp.value = String(state.settings.extractorTemperature);
+      saveSettings();
+    });
+    rerankMode.addEventListener('change', () => {
+      state.settings.rerankMode = ['env', 'on', 'off'].includes(rerankMode.value)
+        ? rerankMode.value
+        : 'env';
+      saveSettings();
+    });
+    rerankModel.addEventListener('change', () => {
+      state.settings.rerankModel = rerankModel.value.trim();
+      saveSettings();
+    });
+    rerankModel.addEventListener('focus', loadModelOptions);
+    rerankTopK.addEventListener('change', () => {
+      state.settings.rerankTopK = Math.round(clampNumber(rerankTopK.value, 1, 64, 16));
+      rerankTopK.value = String(state.settings.rerankTopK);
       saveSettings();
     });
     panel.querySelector('#loreweaver-proxy-health').addEventListener('click', checkHealth);
@@ -374,6 +414,7 @@
         include_world_memory: true,
         include_character_memory: true,
         include_chat_memory: true,
+        ...currentRerankSettings(),
       },
     };
     if (worldBinding.diagnostics) metadata.world_binding_diagnostics = worldBinding.diagnostics;
@@ -1770,6 +1811,22 @@
       temperature: clampNumber(state.settings.extractorTemperature, 0, 2, 0),
       max_tokens: Math.round(clampNumber(state.settings.extractorMaxTokens, 256, 12000, 3000)),
     };
+  }
+
+  function currentRerankSettings() {
+    const mode = ['env', 'on', 'off'].includes(state.settings.rerankMode)
+      ? state.settings.rerankMode
+      : 'env';
+    const model = String(state.settings.rerankModel || '').trim();
+    const result = {
+      rerank_enabled: mode === 'env' ? null : mode === 'on',
+      rerank_model: model || null,
+      rerank_temperature: clampNumber(state.settings.rerankTemperature, 0, 2, 0),
+      rerank_top_k: Math.round(clampNumber(state.settings.rerankTopK, 1, 64, 16)),
+      rerank_max_tokens: Math.round(clampNumber(state.settings.rerankMaxTokens, 128, 4000, 512)),
+    };
+    if (!model) result.rerank_model = null;
+    return result;
   }
 
   function syncExtractorModelField(extractorNarrative, extractorModel) {
