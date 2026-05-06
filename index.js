@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.35';
+  const EXTENSION_VERSION = '0.2.36';
   const FEATURES = [
     'status',
     'models',
@@ -21,6 +21,7 @@
     'extractor-runtime',
     'extractor-context-window',
     'extractor-semantic-dedup',
+    'extractor-rerank-dedup',
   ];
   const DEFAULTS = {
     enabled: true,
@@ -35,6 +36,7 @@
     extractorMaxTokens: 3000,
     extractorContextWindowMessages: 3,
     extractorSemanticDedupEnabled: false,
+    extractorSemanticDedupRerankEnabled: false,
     rerankMode: 'env',
     rerankModel: '',
     rerankTemperature: 0,
@@ -155,6 +157,8 @@
         <input id="loreweaver-proxy-extractor-context" class="lw-number" type="number" min="0" max="12" step="1" title="Previous chat messages attached as read-only context for fact extraction. 0 disables the live context tail and lets rebuild use proxy env defaults.">
         <label class="lw-inline-label" for="loreweaver-proxy-extractor-dedup" title="When enabled, extracted episodic facts are embedded and compared with existing facts in this chat/world. Facts over the proxy semantic similarity threshold are skipped; raw messages are still stored.">Dedupe</label>
         <input id="loreweaver-proxy-extractor-dedup" type="checkbox" title="Skip newly extracted episodic facts when a semantically similar fact already exists in the vector database. Default off.">
+        <label class="lw-inline-label" for="loreweaver-proxy-extractor-rerank-dedup" title="When enabled, Qdrant finds similar existing facts and the rerank model decides whether the new episodic fact is a duplicate. Raw messages are still stored.">Rerank</label>
+        <input id="loreweaver-proxy-extractor-rerank-dedup" type="checkbox" title="Use the rerank model as a semantic duplicate judge for extracted episodic facts. Default off.">
       </div>
       <div class="lw-row">
         <label for="loreweaver-proxy-rerank-mode">Rerank</label>
@@ -200,6 +204,7 @@
     const extractorTemp = panel.querySelector('#loreweaver-proxy-extractor-temp');
     const extractorContext = panel.querySelector('#loreweaver-proxy-extractor-context');
     const extractorDedup = panel.querySelector('#loreweaver-proxy-extractor-dedup');
+    const extractorRerankDedup = panel.querySelector('#loreweaver-proxy-extractor-rerank-dedup');
     const rerankMode = panel.querySelector('#loreweaver-proxy-rerank-mode');
     const rerankModel = panel.querySelector('#loreweaver-proxy-rerank-model');
     const rerankTopK = panel.querySelector('#loreweaver-proxy-rerank-top-k');
@@ -216,6 +221,7 @@
       Math.round(clampNumber(state.settings.extractorContextWindowMessages, 0, 12, 3)),
     );
     extractorDedup.checked = Boolean(state.settings.extractorSemanticDedupEnabled);
+    extractorRerankDedup.checked = Boolean(state.settings.extractorSemanticDedupRerankEnabled);
     rerankMode.value = ['env', 'on', 'off'].includes(state.settings.rerankMode)
       ? state.settings.rerankMode
       : 'env';
@@ -266,6 +272,12 @@
     });
     extractorDedup.addEventListener('change', () => {
       state.settings.extractorSemanticDedupEnabled = Boolean(extractorDedup.checked);
+      saveSettings();
+    });
+    extractorRerankDedup.addEventListener('change', () => {
+      state.settings.extractorSemanticDedupRerankEnabled = Boolean(
+        extractorRerankDedup.checked,
+      );
       saveSettings();
     });
     rerankMode.addEventListener('change', () => {
@@ -1840,6 +1852,9 @@
         clampNumber(state.settings.extractorContextWindowMessages, 0, 12, 3),
       ),
       semantic_dedup_enabled: Boolean(state.settings.extractorSemanticDedupEnabled),
+      semantic_dedup_rerank_enabled: Boolean(
+        state.settings.extractorSemanticDedupRerankEnabled,
+      ),
     };
   }
 
