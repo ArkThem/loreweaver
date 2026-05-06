@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.33';
+  const EXTENSION_VERSION = '0.2.34';
   const FEATURES = [
     'status',
     'models',
@@ -19,6 +19,7 @@
     'hygiene',
     'hard-reset',
     'extractor-runtime',
+    'extractor-context-window',
   ];
   const DEFAULTS = {
     enabled: true,
@@ -31,6 +32,7 @@
     narrativeModelOverride: '',
     extractorTemperature: 0,
     extractorMaxTokens: 3000,
+    extractorContextWindowMessages: 3,
     rerankMode: 'env',
     rerankModel: '',
     rerankTemperature: 0,
@@ -147,6 +149,8 @@
         <datalist id="loreweaver-proxy-model-options"></datalist>
         <label class="lw-inline-label" for="loreweaver-proxy-extractor-temp">Temp</label>
         <input id="loreweaver-proxy-extractor-temp" class="lw-number" type="number" min="0" max="2" step="0.05">
+        <label class="lw-inline-label" for="loreweaver-proxy-extractor-context">Ctx</label>
+        <input id="loreweaver-proxy-extractor-context" class="lw-number" type="number" min="0" max="12" step="1" title="Previous chat messages attached as read-only context for fact extraction. 0 disables the live context tail and lets rebuild use proxy env defaults.">
       </div>
       <div class="lw-row">
         <label for="loreweaver-proxy-rerank-mode">Rerank</label>
@@ -190,6 +194,7 @@
     const extractorNarrative = panel.querySelector('#loreweaver-proxy-extractor-narrative');
     const extractorModel = panel.querySelector('#loreweaver-proxy-extractor-model');
     const extractorTemp = panel.querySelector('#loreweaver-proxy-extractor-temp');
+    const extractorContext = panel.querySelector('#loreweaver-proxy-extractor-context');
     const rerankMode = panel.querySelector('#loreweaver-proxy-rerank-mode');
     const rerankModel = panel.querySelector('#loreweaver-proxy-rerank-model');
     const rerankTopK = panel.querySelector('#loreweaver-proxy-rerank-top-k');
@@ -202,6 +207,9 @@
     extractorTemp.value = Number.isFinite(Number(state.settings.extractorTemperature))
       ? String(Number(state.settings.extractorTemperature))
       : '0';
+    extractorContext.value = String(
+      Math.round(clampNumber(state.settings.extractorContextWindowMessages, 0, 12, 3)),
+    );
     rerankMode.value = ['env', 'on', 'off'].includes(state.settings.rerankMode)
       ? state.settings.rerankMode
       : 'env';
@@ -241,6 +249,13 @@
     extractorTemp.addEventListener('change', () => {
       state.settings.extractorTemperature = clampNumber(extractorTemp.value, 0, 2, 0);
       extractorTemp.value = String(state.settings.extractorTemperature);
+      saveSettings();
+    });
+    extractorContext.addEventListener('change', () => {
+      state.settings.extractorContextWindowMessages = Math.round(
+        clampNumber(extractorContext.value, 0, 12, 3),
+      );
+      extractorContext.value = String(state.settings.extractorContextWindowMessages);
       saveSettings();
     });
     rerankMode.addEventListener('change', () => {
@@ -354,6 +369,7 @@
       active_character_context: resolvedSpeaker || metadata.active_character,
       group_context: metadata.group,
       extraction: metadata.extraction,
+      context_messages: extractionContextMessagesFor(resolvedMessage, metadata),
       created_at: new Date().toISOString(),
     };
 
@@ -1810,6 +1826,9 @@
       ),
       temperature: clampNumber(state.settings.extractorTemperature, 0, 2, 0),
       max_tokens: Math.round(clampNumber(state.settings.extractorMaxTokens, 256, 12000, 3000)),
+      context_window_messages: Math.round(
+        clampNumber(state.settings.extractorContextWindowMessages, 0, 12, 3),
+      ),
     };
   }
 
@@ -1848,6 +1867,47 @@
         ? state.settings.narrativeModelOverride || ''
         : state.settings.extractorModel || '',
     ).trim();
+  }
+
+  function extractionContextMessagesFor(message, metadata) {
+    const windowSize = Math.round(
+      clampNumber(metadata?.extraction?.context_window_messages, 0, 12, 0),
+    );
+    if (windowSize <= 0) return [];
+    const chat = currentChatMessages();
+    let index = chatMessageIndex(message);
+    if (index < 0) index = chat.length;
+    const start = Math.max(0, index - windowSize);
+    const result = [];
+    for (let cursor = start; cursor < index; cursor += 1) {
+      const candidate = chat[cursor];
+      const content = extractMessageContent(candidate).trim();
+      if (!content) continue;
+      result.push({
+        message_id: stableMessageId(candidate, cursor, metadata.chat_id),
+        speaker: speakerForContextMessage(candidate, metadata),
+        content,
+        created_at: candidate?.send_date || candidate?.created_at || null,
+      });
+    }
+    return result;
+  }
+
+  function speakerForContextMessage(message, metadata) {
+    const name = speakerName(message);
+    if (isUserMessage(message)) {
+      return {
+        type: 'user',
+        id: metadata.profile_id || metadata.user_id || 'profile_001',
+        name: name || metadata.user_id || metadata.profile_id || null,
+      };
+    }
+    const resolved = resolveMetadataMember(metadata, name) || metadata.active_character;
+    return {
+      type: 'character',
+      id: resolved?.character_id || name || 'character',
+      name: name || resolved?.name || null,
+    };
   }
 
   function updateExtractorModelControl(extractorNarrative, extractorModel) {
