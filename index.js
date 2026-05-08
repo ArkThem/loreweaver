@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.36';
+  const EXTENSION_VERSION = '0.2.37';
   const FEATURES = [
     'status',
     'models',
@@ -22,6 +22,7 @@
     'extractor-context-window',
     'extractor-semantic-dedup',
     'extractor-rerank-dedup',
+    'rebuild-eta',
   ];
   const DEFAULTS = {
     enabled: true,
@@ -712,9 +713,16 @@
     const displayProcessed = statusText === 'completed' && total > 0 ? total : processed;
     const percent = total > 0 ? Math.round((Math.min(displayProcessed, total) / total) * 100) : 0;
     const title = label || `Rebuild ${statusText}`;
+    const timing = rebuildTiming(job, {
+      total,
+      processed: displayProcessed,
+      statusText,
+      isBusy,
+    });
     const summaryParts = [
       `${title}: ${displayProcessed}/${total || '?'} messages`,
       total > 0 ? `${percent}%` : null,
+      timing.summary,
       `${records} records`,
       `${operations} operations`,
       job?.job_id ? `job ${job.job_id}` : null,
@@ -725,9 +733,13 @@
     const currentLine = currentText
       ? `${currentStage ? labelForCurrentStage(currentStage) : 'Current'}: ${currentText}`
       : '';
+    const progressLines = [
+      currentLine || (isBusy ? 'Waiting for the next processed item...' : `Rebuild ${statusText}`),
+      timing.detail,
+    ].filter(Boolean);
     const detail = job?.error
       ? `Error: ${job.error}`
-      : currentLine || (isBusy ? 'Waiting for the next processed item...' : `Rebuild ${statusText}`);
+      : progressLines.join('\n');
 
     state.status = summary;
     state.busy = isBusy;
@@ -755,6 +767,78 @@
       progressDetail.textContent = detail;
     }
     updateRebuildControls(statusText);
+  }
+
+  function rebuildTiming(job, { total, processed, statusText, isBusy }) {
+    const startedAt = parseTimestamp(job?.started_at) || parseTimestamp(job?.created_at);
+    const finishedAt = isTerminalRebuildStatus(statusText)
+      ? parseTimestamp(job?.finished_at) || parseTimestamp(job?.updated_at) || Date.now()
+      : Date.now();
+    const elapsedMs = startedAt ? Math.max(0, finishedAt - startedAt) : 0;
+    const completed = Math.max(0, Math.min(Number(processed || 0), total || Number(processed || 0)));
+    const speedPerSecond = elapsedMs > 0 && completed > 0 ? completed / (elapsedMs / 1000) : 0;
+    const remaining = total > 0 ? Math.max(0, total - completed) : 0;
+    const etaMs = speedPerSecond > 0 && remaining > 0 ? (remaining / speedPerSecond) * 1000 : 0;
+    const progressing = ['queued', 'running'].includes(String(statusText || ''));
+    const speed = speedPerSecond > 0 ? formatMessageRate(speedPerSecond) : '';
+    const elapsed = elapsedMs > 0 ? `elapsed ${formatDuration(elapsedMs)}` : '';
+    const eta = etaMs > 0 && progressing ? `ETA ${formatDuration(etaMs)}` : '';
+    const currentStartedAt = parseTimestamp(job?.updated_at);
+    const currentMs = progressing && currentStartedAt ? Math.max(0, Date.now() - currentStartedAt) : 0;
+    const current = currentMs > 2500 && job?.current_message_id
+      ? `current item ${formatDuration(currentMs)}`
+      : '';
+    const idleReason = statusText === 'paused' ? 'paused' : 'waiting for first completed message';
+
+    if (!speed && isBusy) {
+      return {
+        summary: elapsed ? `${elapsed} · warming up` : 'warming up',
+        detail: [elapsed, current || idleReason].filter(Boolean).join(' · '),
+      };
+    }
+    if (!speed) {
+      return {
+        summary: elapsed,
+        detail: elapsed,
+      };
+    }
+    return {
+      summary: [speed, eta].filter(Boolean).join(' · '),
+      detail: [speed, eta, elapsed, current].filter(Boolean).join(' · '),
+    };
+  }
+
+  function parseTimestamp(value) {
+    if (!value) return 0;
+    const timestamp = Date.parse(String(value));
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  }
+
+  function formatMessageRate(messagesPerSecond) {
+    const perMinute = messagesPerSecond * 60;
+    if (perMinute >= 0.1) {
+      return `${formatCompactNumber(perMinute)} msg/min`;
+    }
+    return `${formatCompactNumber(messagesPerSecond * 3600)} msg/hour`;
+  }
+
+  function formatCompactNumber(value) {
+    if (!Number.isFinite(value)) return '0';
+    if (value >= 10) return value.toFixed(1);
+    if (value >= 1) return value.toFixed(2);
+    return value.toFixed(3);
+  }
+
+  function formatDuration(ms) {
+    const totalSeconds = Math.max(0, Math.round(ms / 1000));
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    if (minutes > 0) return `${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+    return `${seconds}s`;
   }
 
   function labelForCurrentStage(stage) {
