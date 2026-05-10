@@ -31,7 +31,9 @@ LoreWeaver proxy, the extension attaches metadata with the target
 payload and current group members. The proxy still has its own fallback parser,
 but explicit `st_memory.active_character` is the preferred path. The injector
 handles both prefixed routes like `/loreweaver/v1/chat/completions` and root
-OpenAI-compatible routes like `/v1/chat/completions` on the same origin.
+OpenAI-compatible routes like `/v1/chat/completions` on the same origin. It can
+read either a plain `fetch(..., { body: JSON.stringify(...) })` payload or a
+constructed `Request` body.
 
 ## UI Smoke
 

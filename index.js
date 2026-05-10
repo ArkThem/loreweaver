@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.39';
+  const EXTENSION_VERSION = '0.2.40';
   const FEATURES = [
     'status',
     'models',
@@ -485,7 +485,7 @@
     if (!state.settings.enabled || !isLoreWeaverChatCompletionRequest(input)) {
       return { input, init };
     }
-    const body = requestBodyText(input, init);
+    const body = await requestBodyText(input, init);
     if (!body) return { input, init };
     let payload;
     try {
@@ -520,6 +520,9 @@
       headers: headersWithJsonContentType(init.headers || (input instanceof Request ? input.headers : undefined)),
       body: JSON.stringify(payload),
     };
+    if (input instanceof Request) {
+      return { input: new Request(input, nextInit), init: {} };
+    }
     return { input, init: nextInit };
   }
 
@@ -557,10 +560,18 @@
     return '';
   }
 
-  function requestBodyText(input, init = {}) {
+  async function requestBodyText(input, init = {}) {
     const body = init.body !== undefined ? init.body : input instanceof Request ? input.body : null;
     if (typeof body === 'string') return body;
     if (body instanceof URLSearchParams) return body.toString();
+    if (body && typeof body.text === 'function') return body.text();
+    if (input instanceof Request) {
+      try {
+        return await input.clone().text();
+      } catch {
+        return '';
+      }
+    }
     return '';
   }
 
