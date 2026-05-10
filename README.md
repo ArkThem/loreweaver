@@ -29,7 +29,9 @@ When a group-chat generation request is sent directly from the browser to the
 LoreWeaver proxy, the extension attaches metadata with the target
 `active_character` if it can resolve the requested speaker from the prompt
 payload and current group members. The proxy still has its own fallback parser,
-but explicit `st_memory.active_character` is the preferred path.
+but explicit `st_memory.active_character` is the preferred path. The injector
+handles both prefixed routes like `/loreweaver/v1/chat/completions` and root
+OpenAI-compatible routes like `/v1/chat/completions` on the same origin.
 
 ## UI Smoke
 

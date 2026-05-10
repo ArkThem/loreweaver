@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.38';
+  const EXTENSION_VERSION = '0.2.39';
   const FEATURES = [
     'status',
     'models',
@@ -528,14 +528,21 @@
     if (!url) return false;
     try {
       const parsed = new URL(url, window.location.href);
+      if (!/\/v1\/chat\/completions\/?$/.test(parsed.pathname)) return false;
       const proxy = String(state.settings.proxyUrl || '').trim();
       if (proxy) {
         const proxyUrl = new URL(proxy, window.location.href);
         const proxyPath = proxyUrl.pathname.replace(/\/$/, '');
         if (proxyUrl.origin !== parsed.origin) return false;
-        if (proxyPath && !parsed.pathname.startsWith(`${proxyPath}/`)) return false;
+        if (
+          proxyPath
+          && !parsed.pathname.startsWith(`${proxyPath}/`)
+          && !/^\/v1\/chat\/completions\/?$/.test(parsed.pathname)
+        ) {
+          return false;
+        }
       }
-      return /\/v1\/chat\/completions\/?$/.test(parsed.pathname);
+      return true;
     } catch {
       const proxy = String(state.settings.proxyUrl || '').replace(/\/$/, '');
       if (proxy && !url.startsWith(`${proxy}/`) && url !== proxy) return false;
