@@ -1,8 +1,10 @@
 # LoreWeaver Proxy SillyTavern Extension
 
 This is the MVP extension shell for LoreWeaver. It listens for chat events,
-sends message events to the proxy, exposes a small Memory panel, and provides
-`window.LoreWeaverProxy.buildSTMemoryMetadata()` for request metadata wiring.
+sends message events to the proxy, exposes a small Memory panel, injects
+`st_memory` into direct LoreWeaver `/v1/chat/completions` browser requests, and
+provides `window.LoreWeaverProxy.buildSTMemoryMetadata()` for request metadata
+wiring.
 
 Install it by copying this directory into SillyTavern's third-party extension
 directory:
@@ -22,6 +24,12 @@ For the Kubernetes/NPM route, use:
 ```text
 /loreweaver
 ```
+
+When a group-chat generation request is sent directly from the browser to the
+LoreWeaver proxy, the extension attaches metadata with the target
+`active_character` if it can resolve the requested speaker from the prompt
+payload and current group members. The proxy still has its own fallback parser,
+but explicit `st_memory.active_character` is the preferred path.
 
 ## UI Smoke
 

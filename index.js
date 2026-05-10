@@ -1,6 +1,6 @@
 (() => {
   const MODULE_NAME = 'loreweaverProxy';
-  const EXTENSION_VERSION = '0.2.37';
+  const EXTENSION_VERSION = '0.2.38';
   const FEATURES = [
     'status',
     'models',
@@ -23,6 +23,7 @@
     'extractor-semantic-dedup',
     'extractor-rerank-dedup',
     'rebuild-eta',
+    'generation-metadata',
   ];
   const DEFAULTS = {
     enabled: true,
@@ -53,6 +54,8 @@
     rebuildPollJobId: null,
     rebuildAutoAttachTimer: null,
     rebuildAutoAttachStartedAt: 0,
+    originalFetch: null,
+    fetchInjectorInstalled: false,
   };
 
   function getContext() {
@@ -411,19 +414,22 @@
     const character = currentCharacter(context);
     const characterId = character ? await characterIdFromCard(character) : null;
     const group = await buildGroupContext(context);
+    const targetCharacter =
+      options.activeCharacter ||
+      (options.targetCharacterName ? resolveGroupMemberByName(group, options.targetCharacterName) : null);
     const worldBinding = await currentWorldBinding(context, {
       includeDiagnostics: Boolean(options.includeWorldDiagnostics),
     });
     const chatId = String(context.chatId || context.chat_id || context.chat?.id || 'default-chat');
     const messageId = stableMessageId(message, chatMessageIndex(message), chatId);
-    const activeCharacter = character
+    const activeCharacter = targetCharacter || (character
       ? {
           character_id: characterId,
           name: character.name || context.name2 || 'Character',
           fingerprint: characterId.split('_').pop(),
           aliases: characterAliases(character, context),
         }
-      : null;
+      : null);
     const metadata = {
       schema_version: '1.0',
       extension_version: EXTENSION_VERSION,
@@ -458,6 +464,188 @@
     };
     if (worldBinding.diagnostics) metadata.world_binding_diagnostics = worldBinding.diagnostics;
     return metadata;
+  }
+
+  function installChatCompletionMetadataInjector() {
+    if (state.fetchInjectorInstalled || typeof window.fetch !== 'function') return;
+    state.originalFetch = window.fetch.bind(window);
+    state.fetchInjectorInstalled = true;
+    window.fetch = async (input, init = {}) => {
+      try {
+        const patched = await maybeAttachGenerationMetadata(input, init);
+        return state.originalFetch(patched.input, patched.init);
+      } catch (error) {
+        console.warn('[LoreWeaver] failed to attach generation metadata', error);
+        return state.originalFetch(input, init);
+      }
+    };
+  }
+
+  async function maybeAttachGenerationMetadata(input, init = {}) {
+    if (!state.settings.enabled || !isLoreWeaverChatCompletionRequest(input)) {
+      return { input, init };
+    }
+    const body = requestBodyText(input, init);
+    if (!body) return { input, init };
+    let payload;
+    try {
+      payload = JSON.parse(body);
+    } catch {
+      return { input, init };
+    }
+    if (!payload || typeof payload !== 'object' || !Array.isArray(payload.messages)) {
+      return { input, init };
+    }
+    const existing = payload.st_memory?.st_memory || payload.st_memory || null;
+    if (existing?.active_character?.character_id) return { input, init };
+
+    const targetName = targetCharacterNameFromPayload(payload);
+    const metadata = await buildSTMemoryMetadata(lastChatMessage(), 'user', {
+      targetCharacterName: targetName,
+    });
+    if (!metadata.active_character && targetName) {
+      const target = resolveMetadataMember(metadata, targetName);
+      if (target) metadata.active_character = target;
+    }
+    payload.st_memory = {
+      ...(existing && typeof existing === 'object' ? existing : metadata),
+      ...metadata,
+      active_character: existing?.active_character || metadata.active_character,
+      group: metadata.group,
+      retrieval: metadata.retrieval,
+      extraction: metadata.extraction,
+    };
+    const nextInit = {
+      ...init,
+      headers: headersWithJsonContentType(init.headers || (input instanceof Request ? input.headers : undefined)),
+      body: JSON.stringify(payload),
+    };
+    return { input, init: nextInit };
+  }
+
+  function isLoreWeaverChatCompletionRequest(input) {
+    const url = requestUrl(input);
+    if (!url) return false;
+    try {
+      const parsed = new URL(url, window.location.href);
+      const proxy = String(state.settings.proxyUrl || '').trim();
+      if (proxy) {
+        const proxyUrl = new URL(proxy, window.location.href);
+        const proxyPath = proxyUrl.pathname.replace(/\/$/, '');
+        if (proxyUrl.origin !== parsed.origin) return false;
+        if (proxyPath && !parsed.pathname.startsWith(`${proxyPath}/`)) return false;
+      }
+      return /\/v1\/chat\/completions\/?$/.test(parsed.pathname);
+    } catch {
+      const proxy = String(state.settings.proxyUrl || '').replace(/\/$/, '');
+      if (proxy && !url.startsWith(`${proxy}/`) && url !== proxy) return false;
+      return /\/v1\/chat\/completions\/?$/.test(url);
+    }
+  }
+
+  function requestUrl(input) {
+    if (typeof input === 'string') return input;
+    if (input instanceof URL) return input.toString();
+    if (input instanceof Request) return input.url;
+    return '';
+  }
+
+  function requestBodyText(input, init = {}) {
+    const body = init.body !== undefined ? init.body : input instanceof Request ? input.body : null;
+    if (typeof body === 'string') return body;
+    if (body instanceof URLSearchParams) return body.toString();
+    return '';
+  }
+
+  function headersWithJsonContentType(headers) {
+    const result = new Headers(headers || {});
+    if (!result.has('Content-Type')) result.set('Content-Type', 'application/json');
+    return result;
+  }
+
+  function targetCharacterNameFromPayload(payload) {
+    const messages = Array.isArray(payload?.messages) ? payload.messages : [];
+    for (const message of messages) {
+      const content = typeof message?.content === 'string' ? message.content : '';
+      if (!content.trim()) continue;
+      for (const pattern of [
+        /Write\s+(.{1,100}?)'s\s+next\s+reply\b/i,
+        /\[?Write\s+the\s+next\s+reply\s+only\s+as\s+([^\]\n.]{1,100})/i,
+        /отвечай\s+только\s+от\s+лица\s+([^\n,.;:。!?]{1,100})/i,
+        /пиши\s+только\s+от\s+лица\s+([^\n,.;:。!?]{1,100})/i,
+        /ответ\s+только\s+от\s+лица\s+([^\n,.;:。!?]{1,100})/i,
+      ]) {
+        const match = content.match(pattern);
+        if (!match) continue;
+        const target = cleanTargetCharacterName(match[1]);
+        if (target) return target;
+      }
+    }
+    return '';
+  }
+
+  function cleanTargetCharacterName(value) {
+    return String(value || '')
+      .replace(/^[\s"'“”‘’\[(]+|[\s"'“”‘’\])]+$/g, '')
+      .replace(/\s+/g, ' ')
+      .replace(/[.:]+$/g, '')
+      .trim();
+  }
+
+  function resolveGroupMemberByName(group, name) {
+    const targetKeys = targetCharacterMatchKeys(name);
+    if (!targetKeys.length) return null;
+    const members = Array.isArray(group?.members) ? group.members : [];
+    for (const member of members) {
+      if (groupMemberMatchKeys(member).some((key) => targetKeys.includes(key))) return member;
+    }
+    for (const member of members) {
+      for (const key of groupMemberMatchKeys(member)) {
+        for (const target of targetKeys) {
+          if (key && (key.endsWith(` ${target}`) || target.endsWith(` ${key}`))) return member;
+          if (nearCharacterNameMatch(key, target)) return member;
+        }
+      }
+    }
+    return null;
+  }
+
+  function targetCharacterMatchKeys(name) {
+    const key = normalizeName(name);
+    if (!key) return [];
+    const result = new Set([key]);
+    if (key.length >= 4 && key.endsWith('ы')) result.add(`${key.slice(0, -1)}а`);
+    if (key.length >= 4 && key.endsWith('и')) result.add(`${key.slice(0, -1)}я`);
+    return Array.from(result);
+  }
+
+  function nearCharacterNameMatch(left, right) {
+    if (Math.min(left.length, right.length) < 4) return false;
+    if (Math.abs(left.length - right.length) > 1) return false;
+    if (left === right) return true;
+    let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+    for (let row = 1; row <= left.length; row += 1) {
+      const current = [row];
+      let best = row;
+      for (let col = 1; col <= right.length; col += 1) {
+        const value = Math.min(
+          previous[col] + 1,
+          current[col - 1] + 1,
+          previous[col - 1] + (left[row - 1] === right[col - 1] ? 0 : 1),
+        );
+        current.push(value);
+        best = Math.min(best, value);
+      }
+      if (best > 1) return false;
+      previous = current;
+    }
+    return previous[right.length] <= 1;
+  }
+
+  function groupMemberMatchKeys(member) {
+    return [member?.name, member?.character_id, ...(member?.aliases || [])]
+      .map(normalizeName)
+      .filter(Boolean);
   }
 
   async function checkHealth() {
@@ -2448,6 +2636,7 @@
   function init() {
     loadSettings();
     mountPanel();
+    installChatCompletionMetadataInjector();
     bindEvents();
     scheduleActiveRebuildProbe('init');
     window.LoreWeaverProxy = {
